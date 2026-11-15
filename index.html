@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#090b10" />
+    <link rel="icon" type="image/png" href="/raptor.png" />
+    <title>Raptor LLM — Local AI</title>
+    <style>
+      html, body { margin: 0; background: #090b10; }
+      #splash { position: fixed; inset: 0; z-index: 9999; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 22px; background: #090b10; color: #e6edf6; font-family: system-ui, "Segoe UI", sans-serif; transition: opacity 0.35s ease; }
+      #splash.hide { opacity: 0; pointer-events: none; }
+      #splash img { width: 168px; height: 168px; border-radius: 36px; animation: splash-pulse 1.8s ease-in-out infinite; }
+      #splash .splash-name { font-size: 26px; font-weight: 700; letter-spacing: 0.22em; text-indent: 0.22em; }
+      #splash .splash-tag { border: 0; padding: 0; background: none; font-family: inherit; text-transform: none; font-size: 13px; color: #7f8da1; letter-spacing: 0.04em; }
+      #splash .splash-bar { width: 160px; height: 3px; border-radius: 2px; background: #1a2430; overflow: hidden; }
+      #splash .splash-bar i { display: block; width: 40%; height: 100%; background: #5fd3ea; border-radius: 2px; animation: splash-slide 1.2s ease-in-out infinite; }
+      @keyframes splash-pulse { 0%, 100% { transform: scale(1); opacity: 0.92; } 50% { transform: scale(1.04); opacity: 1; } }
+      @keyframes splash-slide { 0% { transform: translateX(-100%); } 100% { transform: translateX(260%); } }
+      @media (prefers-reduced-motion: reduce) { #splash img, #splash .splash-bar i { animation: none; } }
+    </style>
+  </head>
+  <body>
+    <div id="splash" role="status" aria-label="Raptor LLM is starting">
+      <img src="/raptor.png" alt="" width="168" height="168" />
+      <div class="splash-name">RAPTOR LLM</div>
+      <div class="splash-bar"><i></i></div>
+      <div class="splash-tag">Local AI, on your hardware</div>
+    </div>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

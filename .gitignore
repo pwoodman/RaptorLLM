@@ -1,0 +1,9 @@
+node_modules/
+dist/
+target/
+src-tauri/target/
+*.log
+.env
+.DS_Store
+# per-user Claude Code settings
+.claude/settings.local.json

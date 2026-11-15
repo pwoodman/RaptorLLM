@@ -1,0 +1,33 @@
+[package]
+name = "raptor-gateway"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+raptor-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+async-trait.workspace = true
+futures-util.workspace = true
+reqwest.workspace = true
+sha2.workspace = true
+hex.workspace = true
+bytes = "1"
+async-stream = "0.3"
+subtle = "2"
+getrandom = "0.2"
+axum = { version = "0.8", default-features = false, features = ["tokio", "http1", "json"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["cors"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+axum-server = { version = "0.7", default-features = false, features = ["tls-rustls-no-provider"] }
+rcgen = { version = "0.13", default-features = false, features = ["ring", "pem"] }
+
+[dev-dependencies]
+tempfile.workspace = true
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"

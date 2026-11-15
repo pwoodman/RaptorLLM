@@ -1,0 +1,39 @@
+{
+  "model": "claude-sonnet-4-5",
+  "max_tokens": 1024,
+  "system": [{"type": "text", "text": "You are terse."}],
+  "temperature": 0.2,
+  "stop_sequences": ["\n\nHuman:"],
+  "stream": false,
+  "metadata": {"user_id": "u-1"},
+  "tools": [
+    {
+      "name": "get_weather",
+      "description": "Get weather",
+      "input_schema": {
+        "type": "object",
+        "properties": {"city": {"type": "string"}},
+        "required": ["city"]
+      }
+    }
+  ],
+  "tool_choice": {"type": "auto"},
+  "messages": [
+    {"role": "user", "content": "What's the weather in Paris?"},
+    {
+      "role": "assistant",
+      "content": [
+        {"type": "thinking", "thinking": "need a tool", "signature": "sig"},
+        {"type": "text", "text": "Checking."},
+        {"type": "tool_use", "id": "toolu_1", "name": "get_weather", "input": {"city": "Paris"}}
+      ]
+    },
+    {
+      "role": "user",
+      "content": [
+        {"type": "tool_result", "tool_use_id": "toolu_1", "content": "18C and sunny"},
+        {"type": "text", "text": "Thanks, and Berlin?"}
+      ]
+    }
+  ]
+}

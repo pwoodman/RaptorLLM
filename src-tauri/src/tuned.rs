@@ -1,0 +1,258 @@
+//! What tuning found for each model on this machine, kept in `config/tuned.json` so the choice
+//! survives a restart. An entry is keyed by machine, model content and runtime build: a new
+//! runtime build, a different GPU or a different file is measured again, never assumed.
+//! A corrupt or unreadable file is treated as empty and never stops the app.
+
+use raptor_core::Result;
+use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
+
+/// The settings tuning chose, and the evidence for them.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TunedEntry {
+    pub gpu_layers: u32,
+    pub ubatch_size: u32,
+    pub prompt_tps: f64,
+    pub gen_tps: f64,
+    /// Time of the representative request with these settings, seconds.
+    pub seconds: f64,
+    /// The same for the settings used without tuning, seconds.
+    pub baseline_seconds: f64,
+    pub measured_at: u64,
+    /// The setting measured with a long context, from an opt-in deep tune. Absent in files written
+    /// before deep tuning existed, and when only the quick tune was run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub long: Option<LongTuned>,
+}
+
+/// The fastest setting with [`raptor_runtime::tune::DEEP_DEPTH`] tokens already in the context.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LongTuned {
+    pub gpu_layers: u32,
+    pub ubatch_size: u32,
+    pub prompt_tps: f64,
+    pub gen_tps: f64,
+    /// Time of the representative request at that depth with these settings, seconds.
+    pub seconds: f64,
+    /// The same for the quick-tune setting at that depth (equal to `seconds` when it won).
+    pub baseline_seconds: f64,
+    pub depth: u32,
+}
+
+/// The setting a load uses for a given context window.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Setting {
+    pub gpu_layers: u32,
+    pub ubatch_size: u32,
+    pub prompt_tps: f64,
+    pub gen_tps: f64,
+    pub seconds: f64,
+    pub baseline_seconds: f64,
+    /// True for the long-prompt setting.
+    pub long: bool,
+}
+
+impl TunedEntry {
+    /// The long-prompt setting for a window of at least its depth when a deep tune measured one,
+    /// otherwise the quick-tune setting.
+    pub fn setting_for(&self, ctx_size: u32) -> Setting {
+        match &self.long {
+            Some(l) if ctx_size >= l.depth => Setting {
+                gpu_layers: l.gpu_layers,
+                ubatch_size: l.ubatch_size,
+                prompt_tps: l.prompt_tps,
+                gen_tps: l.gen_tps,
+                seconds: l.seconds,
+                baseline_seconds: l.baseline_seconds,
+                long: true,
+            },
+            _ => Setting {
+                gpu_layers: self.gpu_layers,
+                ubatch_size: self.ubatch_size,
+                prompt_tps: self.prompt_tps,
+                gen_tps: self.gen_tps,
+                seconds: self.seconds,
+                baseline_seconds: self.baseline_seconds,
+                long: false,
+            },
+        }
+    }
+}
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct File {
+    entries: BTreeMap<String, TunedEntry>,
+}
+
+/// The persisted tuning results.
+#[derive(Debug)]
+pub struct TunedStore {
+    path: PathBuf,
+    file: File,
+}
+
+/// Key of one machine, model file and runtime build.
+pub fn key(machine: &str, model_sha256: &str, runtime_id: &str, runtime_version: &str) -> String {
+    format!("{machine}|{model_sha256}|{runtime_id}|{runtime_version}")
+}
+
+impl TunedStore {
+    /// Opens the store at `path`. A missing, unreadable or corrupt file gives an empty store.
+    pub fn open(path: &Path) -> Self {
+        let file = std::fs::read(path)
+            .ok()
+            .and_then(|b| serde_json::from_slice(&b).ok())
+            .unwrap_or_default();
+        Self {
+            path: path.to_path_buf(),
+            file,
+        }
+    }
+
+    pub fn get(&self, key: &str) -> Option<TunedEntry> {
+        self.file.entries.get(key).cloned()
+    }
+
+    /// Saves `entry` for `key`, replacing an older one. The file is written atomically.
+    pub fn put(&mut self, key: &str, entry: TunedEntry) -> Result<()> {
+        let mut next = File {
+            entries: self.file.entries.clone(),
+        };
+        next.entries.insert(key.to_string(), entry);
+        let bytes = serde_json::to_vec_pretty(&next)?;
+        crate::fsutil::write_atomic(&self.path, &bytes)?;
+        self.file = next;
+        Ok(())
+    }
+
+    /// Forgets the tuning of `key`. True when there was one.
+    pub fn remove(&mut self, key: &str) -> Result<bool> {
+        if !self.file.entries.contains_key(key) {
+            return Ok(false);
+        }
+        let mut next = File {
+            entries: self.file.entries.clone(),
+        };
+        next.entries.remove(key);
+        let bytes = serde_json::to_vec_pretty(&next)?;
+        crate::fsutil::write_atomic(&self.path, &bytes)?;
+        self.file = next;
+        Ok(true)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entry(ub: u32) -> TunedEntry {
+        TunedEntry {
+            gpu_layers: 41,
+            ubatch_size: ub,
+            prompt_tps: 2234.7,
+            gen_tps: 68.4,
+            seconds: 5.6,
+            baseline_seconds: 8.5,
+            measured_at: 1,
+            long: None,
+        }
+    }
+
+    fn long(ub: u32) -> LongTuned {
+        LongTuned {
+            gpu_layers: 39,
+            ubatch_size: ub,
+            prompt_tps: 600.0,
+            gen_tps: 30.0,
+            seconds: 15.4,
+            baseline_seconds: 18.0,
+            depth: 16_384,
+        }
+    }
+
+    #[test]
+    fn a_file_written_before_deep_tuning_still_loads_and_has_no_long_setting() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tuned.json");
+        std::fs::write(
+            &path,
+            br#"{"entries":{"k":{"gpu_layers":41,"ubatch_size":256,"prompt_tps":2234.7,"gen_tps":68.4,"seconds":5.6,"baseline_seconds":8.5,"measured_at":1}}}"#,
+        )
+        .unwrap();
+        let got = TunedStore::open(&path).get("k").unwrap();
+        assert_eq!(got, entry(256));
+        assert!(got.long.is_none());
+        let saved = serde_json::to_string(&got).unwrap();
+        assert!(!saved.contains("long"), "{saved}");
+    }
+
+    #[test]
+    fn the_long_setting_is_saved_and_used_only_for_windows_at_least_its_depth() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tuned.json");
+        let mut e = entry(256);
+        e.long = Some(long(512));
+        let mut store = TunedStore::open(&path);
+        store.put("k", e).unwrap();
+        let got = TunedStore::open(&path).get("k").unwrap();
+
+        let short = got.setting_for(8_192);
+        assert!(!short.long);
+        assert_eq!((short.gpu_layers, short.ubatch_size), (41, 256));
+        let at = got.setting_for(16_384);
+        assert!(at.long);
+        assert_eq!((at.gpu_layers, at.ubatch_size), (39, 512));
+        assert!((at.baseline_seconds - 18.0).abs() < 1e-9);
+        assert!(got.setting_for(131_072).long);
+    }
+
+    #[test]
+    fn without_a_long_setting_every_window_uses_the_quick_tune() {
+        let s = entry(256).setting_for(131_072);
+        assert!(!s.long);
+        assert_eq!(s.ubatch_size, 256);
+    }
+
+    #[test]
+    fn results_survive_a_restart_and_are_keyed_by_runtime_build() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config").join("tuned.json");
+        let k1 = key("m1", "sha", "llama-hip-win", "b12360");
+        let k2 = key("m1", "sha", "llama-hip-win", "b12400");
+        let mut store = TunedStore::open(&path);
+        assert!(store.get(&k1).is_none());
+        store.put(&k1, entry(256)).unwrap();
+
+        let reopened = TunedStore::open(&path);
+        assert_eq!(reopened.get(&k1), Some(entry(256)));
+        assert!(
+            reopened.get(&k2).is_none(),
+            "a new runtime build is measured again"
+        );
+    }
+
+    #[test]
+    fn a_corrupt_file_is_an_empty_store_and_is_replaced_on_the_next_save() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tuned.json");
+        std::fs::write(&path, b"{ not json").unwrap();
+        let mut store = TunedStore::open(&path);
+        assert!(store.get("k").is_none());
+        store.put("k", entry(512)).unwrap();
+        assert_eq!(TunedStore::open(&path).get("k"), Some(entry(512)));
+    }
+
+    #[test]
+    fn remove_forgets_one_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tuned.json");
+        let mut store = TunedStore::open(&path);
+        store.put("a", entry(256)).unwrap();
+        store.put("b", entry(512)).unwrap();
+        assert!(store.remove("a").unwrap());
+        assert!(!store.remove("a").unwrap());
+        let reopened = TunedStore::open(&path);
+        assert!(reopened.get("a").is_none() && reopened.get("b").is_some());
+    }
+}

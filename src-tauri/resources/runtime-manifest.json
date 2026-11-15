@@ -1,0 +1,61 @@
+{
+  "schema_version": 1,
+  "runtimes": [
+    {
+      "id": "llama-hip-win",
+      "version": "b12340",
+      "llama_cpp_build": "b12340",
+      "backend": "hip",
+      "os": "windows",
+      "gfx_archs": ["gfx1010", "gfx1011", "gfx1012", "gfx1030", "gfx1031", "gfx1032", "gfx1033", "gfx1034", "gfx1035", "gfx1036", "gfx1100", "gfx1101", "gfx1102", "gfx1103", "gfx1150", "gfx1151", "gfx1152", "gfx1153", "gfx1200", "gfx1201"],
+      "url": "https://github.com/ggml-org/llama.cpp/releases/download/b12340/llama-b12340-bin-win-rocm-10.0-x64.zip",
+      "sha256": "e0088ddf399bd689f0a836a45a7b45251a3b0337701eabf415d0c3ace1aff83f"
+    },
+    {
+      "id": "llama-vulkan-win",
+      "version": "b12340",
+      "llama_cpp_build": "b12340",
+      "backend": "vulkan",
+      "os": "windows",
+      "url": "https://github.com/ggml-org/llama.cpp/releases/download/b12340/llama-b12340-bin-win-vulkan-x64.zip",
+      "sha256": "a2c7a2bfaaf57b5357f84cf584603d088143a5be08c68cb623e6d9bb7db664e8"
+    },
+    {
+      "id": "llama-cpu-win",
+      "version": "b12340",
+      "llama_cpp_build": "b12340",
+      "backend": "cpu",
+      "os": "windows",
+      "url": "https://github.com/ggml-org/llama.cpp/releases/download/b12340/llama-b12340-bin-win-cpu-x64.zip",
+      "sha256": "eecf36a2d75b25bceb877a5a78fe1d7a2a9e8ae8375efa33b37547624168b56b"
+    },
+    {
+      "id": "llama-hip-linux",
+      "version": "b12340",
+      "llama_cpp_build": "b12340",
+      "backend": "hip",
+      "os": "linux",
+      "gfx_archs": ["gfx908", "gfx90a", "gfx942", "gfx950", "gfx1010", "gfx1011", "gfx1012", "gfx1030", "gfx1031", "gfx1032", "gfx1033", "gfx1034", "gfx1035", "gfx1036", "gfx1100", "gfx1101", "gfx1102", "gfx1103", "gfx1150", "gfx1151", "gfx1152", "gfx1200", "gfx1201"],
+      "url": "https://github.com/ggml-org/llama.cpp/releases/download/b12340/llama-b12340-bin-ubuntu-rocm-10.0-x64.tar.gz",
+      "sha256": "3598009b32c59817aa4fb256b2783f7eefd3c215a0d365e6802fe50bda597cea"
+    },
+    {
+      "id": "llama-vulkan-linux",
+      "version": "b12340",
+      "llama_cpp_build": "b12340",
+      "backend": "vulkan",
+      "os": "linux",
+      "url": "https://github.com/ggml-org/llama.cpp/releases/download/b12340/llama-b12340-bin-ubuntu-vulkan-x64.tar.gz",
+      "sha256": "bcb0b15e19e5bd4064243e347e1becbd2d9abf959ad2f4cd8768ad68fc43b51c"
+    },
+    {
+      "id": "llama-cpu-linux",
+      "version": "b12340",
+      "llama_cpp_build": "b12340",
+      "backend": "cpu",
+      "os": "linux",
+      "url": "https://github.com/ggml-org/llama.cpp/releases/download/b12340/llama-b12340-bin-ubuntu-x64.tar.gz",
+      "sha256": "5bc0276548147e56aa03f97b201b1cb3b43cbda6e388f1f2f4c8d82b56313856"
+    }
+  ]
+}
