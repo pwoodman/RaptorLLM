@@ -41,7 +41,7 @@ const BUNDLED_RUNTIME_MANIFEST: &str = "resources/runtime-manifest.json";
 /// Copies the bundled runtime index to `config/` when none is there yet. An existing file is
 /// never overwritten, so user edits survive app updates. A missing bundle is logged, not fatal:
 /// `runtime_ensure` then reports that no index exists.
-fn seed_runtime_manifest(app: &AppHandle, state: &AppState) {
+pub(crate) fn seed_runtime_manifest(app: &AppHandle, state: &AppState) {
     let target = state.runtime_manifest_path();
     if target.exists() {
         return;
@@ -66,15 +66,18 @@ fn seed_runtime_manifest(app: &AppHandle, state: &AppState) {
     }
 }
 
-/// Starts the background work: hardware detection (once, cached), the gateway per settings and
-/// the llama-server state watcher. Nothing here downloads or installs anything. The watcher
-/// and the gateway stop at exit, see `AppState::shutdown`.
-fn start_background(app: &AppHandle) {
+/// Starts hardware detection before selected-runtime restoration, while starting the gateway
+/// independently. It also starts the llama-server state watcher. The watcher and gateway stop at
+/// exit, see `AppState::shutdown`.
+pub(crate) fn start_background(app: &AppHandle) {
     let hardware_app = app.clone();
     tauri::async_runtime::spawn(async move {
         let state = hardware_app.state::<AppState>();
         if let Err(e) = state.refresh_hardware().await {
             tracing::warn!("hardware detection failed: {e}");
+        }
+        if let Err(e) = state.restore_installed_runtime().await {
+            tracing::warn!(error = %e, "could not select the installed runtime");
         }
     });
 
@@ -118,16 +121,11 @@ pub fn run() {
         .setup(|app| {
             seed_runtime_manifest(app.handle(), &app.state::<AppState>());
             start_background(app.handle());
-            let handle = app.handle().clone();
-            tauri::async_runtime::spawn(async move {
-                if let Err(e) = handle.state::<AppState>().restore_installed_runtime().await {
-                    tracing::warn!(error = %e, "could not select the installed runtime");
-                }
-            });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             commands::system::hardware_info,
+            commands::system::hardware_refresh,
             commands::system::runtime_status,
             commands::system::runtime_ensure,
             commands::system::runtime_rollback,

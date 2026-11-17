@@ -38,7 +38,7 @@ function settings(overrides: Partial<SettingsView> = {}): SettingsView {
 describe("StoragePanel", () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it("saves a folder as soon as the user selects it in Browse", async () => {
+  it("asks before switching live services to a folder selected in Browse", async () => {
     const selected = "E:/Models/Raptor";
     vi.mocked(api.dialog.pickFolder).mockResolvedValue(selected);
     vi.mocked(api.settings.setStorageDir).mockResolvedValue(
@@ -48,6 +48,10 @@ describe("StoragePanel", () => {
 
     render(<StoragePanel settings={settings()} onChange={onChange} />);
     await userEvent.click(screen.getByRole("button", { name: "Browse..." }));
+
+    expect(await screen.findByRole("alertdialog", { name: "Switch storage folder now?" })).toBeInTheDocument();
+    expect(api.settings.setStorageDir).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole("button", { name: "Switch folder now" }));
 
     expect(api.settings.setStorageDir).toHaveBeenCalledWith(selected);
     expect(onChange).toHaveBeenCalledWith(

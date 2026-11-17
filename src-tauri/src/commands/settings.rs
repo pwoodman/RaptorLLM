@@ -37,7 +37,7 @@ pub struct SettingsView {
     pub storage_dir: Option<String>,
     pub default_storage_dir: String,
     pub active_storage_dir: String,
-    /// True when the configured storage directory differs from the one in use.
+    /// True until the automatic app restart has reopened services on the configured path.
     pub restart_required: bool,
     pub gateway_enabled: bool,
     pub gateway_port: u16,
@@ -175,10 +175,12 @@ pub async fn settings_get(state: State<'_, AppState>) -> Result<SettingsView> {
     view(&state)
 }
 
-/// Sets the storage directory (models, runtimes, conversations, context index). Takes
-/// effect on the next start. `null` returns to the platform default.
+/// Changes the storage directory (models, runtimes, downloads, conversations, logs and context
+/// index) and requests an orderly app restart so all path-bound services reopen against it.
+/// Existing files are left in the old folder. `null` restores the default.
 #[tauri::command]
 pub async fn settings_set_storage_dir(
+    app: AppHandle,
     state: State<'_, AppState>,
     path: Option<String>,
 ) -> Result<SettingsView> {
@@ -186,11 +188,32 @@ pub async fn settings_set_storage_dir(
         Some(p) => Some(parse_dir(&p)?),
         None => None,
     };
+    let requested = match dir.as_ref() {
+        Some(path) => DataDirs::new(path.clone()),
+        None => DataDirs::default_location()?,
+    };
+    requested.ensure()?;
+    let target = std::fs::canonicalize(&requested.root).unwrap_or(requested.root);
+    let active =
+        std::fs::canonicalize(&state.dirs.root).unwrap_or_else(|_| state.dirs.root.clone());
+    let stored = dir.map(|_| target.clone());
+    if target == active {
+        state.settings.update(|s| {
+            s.storage_dir = stored;
+            Ok(())
+        })?;
+        return view(&state);
+    }
+
     state.settings.update(|s| {
-        s.storage_dir = dir;
+        s.storage_dir = stored;
         Ok(())
     })?;
-    view(&state)
+    let response = view(&state)?;
+    // Path-bound services are rebuilt from settings at startup. Trigger an orderly app restart
+    // automatically; callers never need to reboot Windows or remember to restart Raptor.
+    app.request_restart();
+    Ok(response)
 }
 
 #[tauri::command]

@@ -880,6 +880,7 @@ export const api = {
   },
   hardware: {
     info: () => call<HardwareInfo>("hardware_info"),
+    refresh: () => call<HardwareInfo>("hardware_refresh"),
   },
 
   runtime: {

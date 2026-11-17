@@ -486,6 +486,8 @@ pub struct AppState {
     load_report: Mutex<Option<StoredLoadReport>>,
     /// Hardware detected once at startup (or on the next explicit probe).
     pub hardware: Mutex<Option<HardwareInfo>>,
+    /// Serializes hardware probes and avoids duplicate uncached probes during startup.
+    hardware_probe_lock: AsyncMutex<()>,
     /// Performance memory. An open error is kept as text and never overwritten.
     pub perf: Mutex<std::result::Result<PerfStore, String>>,
     /// Cancelled at exit. Stops the status watcher and any other background loop.
@@ -594,6 +596,7 @@ impl AppState {
             tune_steps: Default::default(),
             load_report: Mutex::new(None),
             hardware: Mutex::new(None),
+            hardware_probe_lock: AsyncMutex::new(()),
             perf: Mutex::new(perf),
             background: CancellationToken::new(),
             startup_notes,
@@ -940,6 +943,7 @@ impl AppState {
 
     /// Probes the hardware and caches the result for the rest of the session.
     pub async fn refresh_hardware(&self) -> Result<HardwareInfo> {
+        let _probe = self.hardware_probe_lock.lock().await;
         let hw = self.runtime.detect_hardware().await?;
         *lock(&self.hardware) = Some(hw.clone());
         Ok(hw)
@@ -954,7 +958,15 @@ impl AppState {
     pub async fn hardware_for_use(&self) -> Result<HardwareInfo> {
         match self.cached_hardware() {
             Some(hw) => Ok(hw),
-            None => self.refresh_hardware().await,
+            None => {
+                let _probe = self.hardware_probe_lock.lock().await;
+                if let Some(hw) = self.cached_hardware() {
+                    return Ok(hw);
+                }
+                let hw = self.runtime.detect_hardware().await?;
+                *lock(&self.hardware) = Some(hw.clone());
+                Ok(hw)
+            }
         }
     }
 

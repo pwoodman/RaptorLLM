@@ -42,6 +42,12 @@ pub async fn hardware_info(state: State<'_, AppState>) -> Result<HardwareInfo> {
     state.hardware_for_use().await
 }
 
+/// Forces a new OS/device probe instead of returning this session's cached snapshot.
+#[tauri::command]
+pub async fn hardware_refresh(state: State<'_, AppState>) -> Result<HardwareInfo> {
+    state.refresh_hardware().await
+}
+
 /// First-run checklist: hardware, runtime, GPU, model, storage and performance memory. It
 /// reads state only and never downloads or installs anything.
 #[tauri::command]
@@ -64,6 +70,9 @@ pub async fn runtime_ensure(state: State<'_, AppState>) -> Result<RuntimeSelecti
     let candidates = candidates_for_pin(index.manifests, pin.as_ref())?;
     let _guard = state.runtime_lock.lock().await;
     refuse_while_serving(&state)?;
+    // Drivers and GPUs may have changed since startup. Installation must select against a fresh
+    // probe so an old CPU-only or wrong-vendor cache cannot silently choose the wrong build.
+    state.refresh_hardware().await?;
     let selection = state
         .runtime
         .ensure_runtime(&candidates, &CancellationToken::new())
@@ -318,7 +327,7 @@ pub async fn runtime_install_preview(state: State<'_, AppState>) -> Result<Runti
     let index = state.load_runtime_index()?;
     let pin = state.settings.snapshot().pinned_runtime;
     let candidates = candidates_for_pin(index.manifests, pin.as_ref())?;
-    let hw = state.hardware_for_use().await?;
+    let hw = state.refresh_hardware().await?;
     let selection = raptor_runtime::manifest::select_runtime(&hw, &candidates)?;
     let installed = state.runtime.installed_runtimes()?;
     let already_installed = installed

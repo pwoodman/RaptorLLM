@@ -7,6 +7,7 @@ import { messageOf } from "../../lib/errors";
 import { libraryStore } from "../../state/library";
 import { Notice } from "../Notice";
 import { Panel } from "../Panel";
+import { ConfirmDialog } from "../ConfirmDialog";
 
 interface StoragePanelProps {
   settings: SettingsView;
@@ -19,19 +20,24 @@ export function StoragePanel({ settings, onChange }: StoragePanelProps) {
   const [busy, setBusy] = useState(false);
   const [picking, setPicking] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [success, setSuccess] = useState(false);
+  const [pending, setPending] = useState<{ value: string | null } | null>(null);
   const inputId = useId();
 
-  async function save(value: string | null) {
+  async function applyStorageChange(value: string | null) {
     setBusy(true);
     setError(null);
+    setSuccess(false);
     try {
       const view = await api.settings.setStorageDir(value);
       setPath(view.storage_dir ?? "");
       onChange(view);
+      setSuccess(true);
     } catch (e) {
       setError(messageOf(e));
     } finally {
       setBusy(false);
+      setPending(null);
     }
   }
 
@@ -42,7 +48,7 @@ export function StoragePanel({ settings, onChange }: StoragePanelProps) {
       const selected = await api.dialog.pickFolder();
       if (selected) {
         setPath(selected);
-        await save(selected);
+        setPending({ value: selected });
       }
     } catch (e) {
       setError(messageOf(e));
@@ -54,7 +60,7 @@ export function StoragePanel({ settings, onChange }: StoragePanelProps) {
   function submit(event: FormEvent) {
     event.preventDefault();
     const trimmed = path.trim();
-    void save(trimmed === "" ? null : trimmed);
+    setPending({ value: trimmed === "" ? null : trimmed });
   }
 
   return (
@@ -83,9 +89,14 @@ export function StoragePanel({ settings, onChange }: StoragePanelProps) {
         )}
       </dl>
 
-      {settings.restart_required && (
-        <Notice tone="warn" title="Restart required">
-          The new storage folder is used after Raptor restarts.
+      {success && (
+        <Notice tone="success" title="Raptor is reopening">
+          It will use the new folder automatically. Windows does not need to restart.
+        </Notice>
+      )}
+      {settings.restart_required && !success && (
+        <Notice tone="info" title="Raptor will apply this automatically">
+          The app reopens itself after you confirm. You do not need to restart Windows.
         </Notice>
       )}
 
@@ -106,7 +117,7 @@ export function StoragePanel({ settings, onChange }: StoragePanelProps) {
               {picking ? "Selecting..." : "Browse..."}
             </button>
           </div>
-          <span className="muted small">Browse saves the selected folder immediately. Typed paths need Save folder. Changes apply after restart; models already stored elsewhere are not moved. Leave empty and save to use the default.</span>
+          <span className="muted small">Choose where future models, runtimes, downloads, chats and logs are kept. Raptor reopens automatically to apply it; existing files are not copied. Leave empty and save to use the default.</span>
         </div>
         <div className="button-row">
           <button type="submit" className="btn btn-primary" disabled={busy}>
@@ -116,7 +127,7 @@ export function StoragePanel({ settings, onChange }: StoragePanelProps) {
             type="button"
             className="btn btn-ghost"
             disabled={busy || settings.storage_dir === null}
-            onClick={() => void save(null)}
+            onClick={() => setPending({ value: null })}
           >
             Use default location
           </button>
@@ -128,6 +139,19 @@ export function StoragePanel({ settings, onChange }: StoragePanelProps) {
           {error}
         </Notice>
       )}
+
+      <ConfirmDialog
+        open={pending !== null}
+        title="Switch storage folder now?"
+        confirmLabel="Switch folder now"
+        busy={busy}
+        onCancel={() => setPending(null)}
+        onConfirm={() => pending && void applyStorageChange(pending.value)}
+      >
+        <p>Raptor will save this folder and reopen automatically. The local model engine and API service briefly stop, then start again on the new folder.</p>
+        <p>Files already in the previous folder, including models and chats, will stay there and will not be moved. You can switch back to see them again.</p>
+        <p className="small"><strong>New folder:</strong> <code className="break">{pending?.value ?? settings.default_storage_dir}</code></p>
+      </ConfirmDialog>
     </Panel>
   );
 }

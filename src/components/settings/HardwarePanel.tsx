@@ -1,29 +1,49 @@
 import { Cpu, RefreshCw } from "lucide-react";
+import { useState } from "react";
 import { api } from "../../api";
 import { useAsyncResource } from "../../hooks/useAsyncResource";
 import { formatBytes, formatCount } from "../../lib/format";
+import { refreshEngine } from "../../state/engine";
 import { ErrorState, LoadingState } from "../AsyncState";
 import { Notice } from "../Notice";
 import { Panel } from "../Panel";
 
 export function HardwarePanel() {
+  const [probeAgain, setProbeAgain] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+  const [refreshError, setRefreshError] = useState<unknown>(null);
   const hardware = useAsyncResource(() => api.hardware.info(), []);
   const hw = hardware.data;
+
+  async function detectAgain() {
+    setRefreshing(true);
+    setRefreshError(null);
+    try {
+      hardware.setData(await api.hardware.refresh());
+      setProbeAgain(true);
+      await refreshEngine();
+    } catch (error) {
+      setRefreshError(error);
+    } finally {
+      setRefreshing(false);
+    }
+  }
 
   return (
     <Panel
       id="hardware"
       title="Hardware"
       icon={<Cpu size={18} aria-hidden="true" />}
-      description="Detected at startup. Used for fit ratings and launch settings."
+      description="Detected when Raptor starts and whenever you ask it to check again. Used for runtime selection and model fit."
       actions={
-        <button type="button" className="btn btn-sm" onClick={hardware.reload} disabled={hardware.loading}>
-          <RefreshCw size={13} aria-hidden="true" /> Refresh
+        <button type="button" className="btn btn-sm" onClick={() => void detectAgain()} disabled={hardware.loading || refreshing}>
+          <RefreshCw size={13} aria-hidden="true" /> {refreshing ? "Detecting..." : probeAgain ? "Detect again" : "Detect hardware"}
         </button>
       }
     >
       {hardware.loading && hw === null && <LoadingState label="Detecting hardware..." />}
       {hardware.error !== null && <ErrorState error={hardware.error} onRetry={hardware.reload} />}
+      {refreshError !== null && <ErrorState error={refreshError} onRetry={() => void detectAgain()} />}
       {hw && (
         <>
           <dl className="facts">

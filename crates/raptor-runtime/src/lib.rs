@@ -186,7 +186,9 @@ impl RuntimeEngine {
     /// Probes the hardware and caches the result for later calls.
     pub async fn detect_hardware(&self) -> Result<HardwareInfo> {
         let hw = self.probe.probe().await?;
-        lock(&self.state).hardware = Some(hw.clone());
+        let mut state = lock(&self.state);
+        state.hardware = Some(hw.clone());
+        state.preflight = None;
         Ok(hw)
     }
 
