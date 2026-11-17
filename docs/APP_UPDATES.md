@@ -17,3 +17,20 @@ The updater signing key is a long-lived trust anchor. The guided script reads `.
 Builds made before this updater was added cannot update themselves. Users on those builds must install the first updater-enabled release once from the GitHub Release page. Later versions can be checked and installed from Settings → About.
 
 The app never installs without an explicit user click. It checks for updates on demand, validates the signed metadata/package, downloads the selected release, then lets the Windows installer restart the app. If no update is found, the current version is shown.
+
+## Publish an existing locally signed build
+
+Pushing a branch or building installers locally does not publish an update. The configured
+`releases/latest/download/latest.json` endpoint exists only after a non-draft, non-prerelease
+GitHub Release includes that asset. Every update also needs a higher app version than the
+installed build; rebuilding version 0.1.1 cannot update an installation of 0.1.1.
+
+When the signing key is kept locally, build both Windows installers with the existing key, then
+run `node scripts/create-update-manifest.mjs`. It creates `target/release/bundle/latest.json`
+from the generated installer signatures and versioned download URLs. The manifest supports
+existing NSIS and MSI installations and the generic Windows x64 target.
+
+Create a draft GitHub Release at the build's committed source, upload both installers, both
+`.sig` files and `latest.json`, then publish it as the latest stable release. Verify the public
+`latest.json` endpoint and its installer URLs after publication. The private signing key stays
+local and must never be included among the release assets.

@@ -13,7 +13,6 @@ import { ServerPanel } from "../components/settings/ServerPanel";
 import { StoragePanel } from "../components/settings/StoragePanel";
 import { AppUpdates } from "../components/settings/AppUpdates";
 import { ErrorState, LoadingState } from "../components/AsyncState";
-import { Notice } from "../components/Notice";
 import { PageHeader } from "../components/PageHeader";
 import { Panel } from "../components/Panel";
 import { AppearancePanel } from "../components/settings/AppearancePanel";
@@ -36,15 +35,13 @@ export default function SettingsPage() {
   // Every settings command returns the full view, including the V2 fields, so the page keeps it whole.
   const adopt = (next: SettingsView) => settings.setData(next as SettingsViewV2);
   const anchor = useStore(uiStore, (s) => s.anchor);
+  const selected = useStore(uiStore, (s) => s.settingsSection);
 
-  // Sections are shown only after their data loads, so the jump waits for the page to settle.
+  // Links from setup and troubleshooting open the requested screen directly.
   useEffect(() => {
     if (anchor === null) return;
-    const target = document.getElementById(anchor);
-    if (target === null) return;
-    target.scrollIntoView({ block: "start" });
-    uiStore.set({ anchor: null });
-  }, [anchor, view]);
+    uiStore.set({ anchor: null, ...(SECTIONS.some((section) => section.id === anchor) ? { settingsSection: anchor } : {}) });
+  }, [anchor]);
 
   return (
     <div className="page">
@@ -63,39 +60,40 @@ export default function SettingsPage() {
       <div className="settings-layout">
         <nav className="settings-nav" aria-label="Settings sections">
           {SECTIONS.map((section) => (
-            <a key={section.id} href={`#${section.id}`}>
+            <button key={section.id} type="button" aria-current={selected === section.id ? "page" : undefined}
+              aria-controls="settings-current-section" onClick={() => uiStore.set({ settingsSection: section.id })}>
               {section.label}
-            </a>
+            </button>
           ))}
         </nav>
 
-        <div className="settings-content">
-          <AppearancePanel />
-          <HardwarePanel />
-          <RuntimePanel />
-          <DependenciesPanel />
+        <div className="settings-content" id="settings-current-section">
+          {selected === "appearance" && <AppearancePanel />}
+          {selected === "hardware" && <HardwarePanel />}
+          {selected === "runtime" && <RuntimePanel />}
+          {selected === "dependencies" && <DependenciesPanel />}
 
-          {view ? (
+          {["server", "storage", "context"].includes(selected) && (view ? (
             <>
-              <ServerPanel settings={view} onChange={adopt} />
-              <StoragePanel settings={view} onChange={adopt} />
-              <ContextPanel settings={view} onChange={adopt} />
+              {selected === "server" && <ServerPanel settings={view} onChange={adopt} />}
+              {selected === "storage" && <StoragePanel settings={view} onChange={adopt} />}
+              {selected === "context" && <ContextPanel settings={view} onChange={adopt} />}
             </>
           ) : settings.error !== null ? (
             <ErrorState error={settings.error} onRetry={settings.reload} />
           ) : (
             <LoadingState label="Loading server, storage and context settings..." />
-          )}
+          ))}
 
-          <DiagnosticsPanel />
+          {selected === "diagnostics" && <DiagnosticsPanel />}
 
-          <Panel id="about" title="About" icon={<Info size={18} aria-hidden="true" />}>
+          {selected === "about" && <Panel id="about" title="About" icon={<Info size={18} aria-hidden="true" />}>
             <p>
               Local AI for llama.cpp GGUF models, with a context engine for coding
               agents. Chats, model files and logs stay on this machine. Model search and downloads use Hugging Face.
             </p>
             <AppUpdates />
-          </Panel>
+          </Panel>}
         </div>
       </div>
     </div>

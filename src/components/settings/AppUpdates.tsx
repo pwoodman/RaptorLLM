@@ -30,10 +30,10 @@ export function AppUpdates() {
       setMessage(update ? `Version ${update.version} is available.` : "You're up to date.");
     } catch (cause) {
       const detail = cause instanceof Error ? cause.message : String(cause);
-      const isMissingFeed = /\b404\b|not found|no release found/i.test(detail);
+      const isMissingFeed = /\b404\b|not found|no release found|valid release json/i.test(detail);
       setError(isMissingFeed
-        ? "The signed update feed is not published yet. You can check the GitHub Releases page for the latest installer."
-        : `Couldn't check for updates. Check your internet connection and try again. Details: ${detail}`);
+        ? "Update information is unavailable. The signed release feed may be missing or invalid. You can get the latest installer from GitHub Releases."
+        : `Couldn't reach the update service. Try again or get the latest installer from GitHub Releases. Details: ${detail}`);
     } finally {
       setChecking(false);
     }
@@ -72,7 +72,7 @@ export function AppUpdates() {
       <p>Version {pkg.version}. Updates are checked against signed GitHub Releases.</p>
       {message && <Notice tone="success">{message}</Notice>}
       {error && <Notice tone="danger">{error}</Notice>}
-      {error && /update feed is not published/i.test(error) && (
+      {error && (
         <p><a href="https://github.com/pwoodman/RaptorLLM/releases" target="_blank" rel="noreferrer">Open GitHub Releases</a></p>
       )}
       {installing && <progress aria-label="Update download progress" max={100} value={progress ?? undefined} />}
