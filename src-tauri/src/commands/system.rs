@@ -499,7 +499,15 @@ fn run_powershell_dialog(script: &str) -> Result<Option<String>> {
         .output()
         .map_err(|e| RaptorError::Runtime(format!("dialog process: {e}")))?;
     if !output.status.success() {
-        return Ok(None);
+        let detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let reason = if detail.is_empty() {
+            format!("PowerShell exited with status {:?}", output.status.code())
+        } else {
+            detail.chars().take(400).collect()
+        };
+        return Err(RaptorError::Runtime(format!(
+            "Windows file/folder dialog failed: {reason}"
+        )));
     }
     let selected = String::from_utf8_lossy(&output.stdout).trim().to_string();
     if selected.is_empty() {

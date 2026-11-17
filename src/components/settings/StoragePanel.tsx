@@ -17,6 +17,7 @@ export function StoragePanel({ settings, onChange }: StoragePanelProps) {
   const storage = useStore(libraryStore, (s) => s.storage);
   const [path, setPath] = useState(settings.storage_dir ?? "");
   const [busy, setBusy] = useState(false);
+  const [picking, setPicking] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const inputId = useId();
 
@@ -35,11 +36,18 @@ export function StoragePanel({ settings, onChange }: StoragePanelProps) {
   }
 
   async function browseDir() {
+    setPicking(true);
+    setError(null);
     try {
       const selected = await api.dialog.pickFolder();
-      if (selected) setPath(selected);
-    } catch {
-      // dialog cancelled or failed
+      if (selected) {
+        setPath(selected);
+        await save(selected);
+      }
+    } catch (e) {
+      setError(messageOf(e));
+    } finally {
+      setPicking(false);
     }
   }
 
@@ -94,11 +102,11 @@ export function StoragePanel({ settings, onChange }: StoragePanelProps) {
               onChange={(e) => setPath(e.target.value)}
               style={{ flex: 1 }}
             />
-            <button type="button" className="btn btn-ghost" onClick={() => void browseDir()}>
-              Browse...
+            <button type="button" className="btn btn-ghost" disabled={busy || picking} onClick={() => void browseDir()}>
+              {picking ? "Selecting..." : "Browse..."}
             </button>
           </div>
-          <span className="muted small">Remembered between launches. Leave empty to use the default (next to the app). Models already stored elsewhere are not moved.</span>
+          <span className="muted small">Browse saves the selected folder immediately. Typed paths need Save folder. Changes apply after restart; models already stored elsewhere are not moved. Leave empty and save to use the default.</span>
         </div>
         <div className="button-row">
           <button type="submit" className="btn btn-primary" disabled={busy}>
