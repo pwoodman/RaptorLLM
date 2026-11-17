@@ -8,6 +8,7 @@ import { libraryStore, refreshLibrary } from "../../state/library";
 import { uiStore } from "../../state/ui";
 import { LoadFailureCard } from "../models/LoadFailureCard";
 import { LoadProgressBar } from "../models/LoadProgressBar";
+import { TuneSpeed } from "../models/TuneSpeed";
 import { DiscoveredModels } from "./DiscoveredModels";
 
 const LAST_KEY = "raptor.lastLoadedModel";
@@ -46,6 +47,7 @@ export function QuickLoadModels() {
   const models = useStore(libraryStore, (s) => s.models);
   const busy = useStore(engineStore, (s) => s.busy);
   const [choice, setChoice] = useState<string | null>(null);
+  const [optimizing, setOptimizing] = useState(false);
   const [error, setError] = useState<unknown>(null);
   const selectId = useId();
 
@@ -90,7 +92,7 @@ export function QuickLoadModels() {
         <select
           id={selectId}
           value={selected.id}
-          disabled={busy !== null}
+          disabled={busy !== null || optimizing}
           onChange={(e) => setChoice(e.target.value)}
         >
           {ordered.map((m) => (
@@ -102,12 +104,13 @@ export function QuickLoadModels() {
         <button
           type="button"
           className="btn btn-primary"
-          disabled={busy !== null}
+          disabled={busy !== null || optimizing}
           onClick={() => void load(selected.id)}
         >
           <Play size={14} aria-hidden="true" /> {busy === "loading" ? "Loading..." : "Load model"}
         </button>
       </div>
+      <TuneSpeed key={selected.id} entry={selected} disabled={busy !== null} onRunningChange={setOptimizing} />
       <LoadProgressBar active={busy === "loading"} />
       {error !== null && <LoadFailureCard error={error} />}
       <DiscoveredModels />

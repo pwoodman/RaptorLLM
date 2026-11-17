@@ -141,12 +141,37 @@ pub struct BackendView {
     /// `unavailable` (the chosen backend is not installed; `note` says so).
     pub effective: String,
     pub rocm_installed: bool,
+    pub cuda_installed: bool,
+    pub sycl_installed: bool,
     pub vulkan_installed: bool,
     /// A sparse Mixture-of-experts model larger than VRAM.
     pub spills: bool,
     pub note: Option<String>,
     /// The measured comparison, quoted next to the selector.
     pub measured: &'static str,
+}
+
+fn auto_backend_for(
+    hw: &HardwareInfo,
+    rocm_installed: bool,
+    cuda_installed: bool,
+    sycl_installed: bool,
+    vulkan_installed: bool,
+) -> Option<Backend> {
+    let gpu = hw.gpu_of(None)?;
+    let native = match gpu.vendor {
+        raptor_runtime::hardware::GpuVendor::Amd => (rocm_installed, Backend::Hip),
+        raptor_runtime::hardware::GpuVendor::Nvidia => (cuda_installed, Backend::Cuda),
+        raptor_runtime::hardware::GpuVendor::Intel => (sycl_installed, Backend::Sycl),
+        raptor_runtime::hardware::GpuVendor::Other => (false, Backend::Vulkan),
+    };
+    if native.0 {
+        Some(native.1)
+    } else if vulkan_installed {
+        Some(Backend::Vulkan)
+    } else {
+        None
+    }
 }
 
 /// Layers `-ngl` can place: `block_count` plus the output layer. `block_count` already includes
@@ -216,9 +241,19 @@ fn long_option(default_ctx: u32, n_ctx_train: u32, budget_mib: u64) -> Option<Co
 #[derive(Debug, Clone, Serialize)]
 pub struct TuneReport {
     pub model_id: String,
+    pub runtime_id: String,
+    pub runtime_version: String,
+    pub backend: Backend,
+    pub context_size: u32,
+    pub gpu_name: Option<String>,
+    pub gpu_driver: Option<String>,
     pub results: Vec<raptor_runtime::tune::Measured>,
     pub best: raptor_runtime::tune::Measured,
     pub baseline: Option<raptor_runtime::tune::Measured>,
+    /// Matched streamed-request metrics for the untuned settings.
+    pub baseline_live: Option<crate::tuned::TuneMetrics>,
+    /// Matched streamed-request metrics for the selected optimized settings.
+    pub best_live: Option<crate::tuned::TuneMetrics>,
     pub improvement_percent: f64,
     /// Layer counts that could not be measured, with the reason.
     pub errors: Vec<String>,
@@ -253,6 +288,18 @@ fn apply_embedding_mode(
         .as_deref()
         .is_some_and(|a| a.contains("bert"));
     config.pooling = (!is_bert).then(|| "mean".to_string());
+}
+
+/// Median of finite benchmark values. Median is less sensitive to OS scheduling spikes than the
+/// mean, while keeping every retained sample available in the profile's sample count.
+fn median(mut values: Vec<f64>) -> f64 {
+    values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let middle = values.len() / 2;
+    if values.len() % 2 == 0 {
+        (values[middle - 1] + values[middle]) / 2.0
+    } else {
+        values[middle]
+    }
 }
 
 /// A load in progress: when it started, and whether it has reached the benchmark.
@@ -587,11 +634,16 @@ impl AppState {
         Ok(true)
     }
 
-    /// Which backends have a runtime on disk: (ROCm, Vulkan).
-    fn installed_backends(&self) -> Result<(bool, bool)> {
+    /// Which backends have a runtime on disk: (ROCm, CUDA, SYCL, Vulkan).
+    fn installed_backends(&self) -> Result<(bool, bool, bool, bool)> {
         let installed = self.runtime.installed_runtimes()?;
         let has = |b: Backend| installed.iter().any(|r| r.backend == b);
-        Ok((has(Backend::Hip), has(Backend::Vulkan)))
+        Ok((
+            has(Backend::Hip),
+            has(Backend::Cuda),
+            has(Backend::Sycl),
+            has(Backend::Vulkan),
+        ))
     }
 
     /// The backend the user chose for a model (`Auto` when nothing was chosen).
@@ -631,24 +683,48 @@ impl AppState {
         use crate::backend_choice::{resolve, Inputs};
         let entry = self.models.library().get(model_id)?;
         let hw = self.hardware_for_use().await?;
-        let (rocm_installed, vulkan_installed) = self.installed_backends()?;
+        let (rocm_installed, cuda_installed, sycl_installed, vulkan_installed) =
+            self.installed_backends()?;
         let spills = Self::model_spills(&entry, &hw);
         let preference = self.backend_pref(model_id);
+        let auto_backend = auto_backend_for(
+            &hw,
+            rocm_installed,
+            cuda_installed,
+            sycl_installed,
+            vulkan_installed,
+        );
         let resolved = resolve(&Inputs {
             pref: preference,
+            amd_gpu: hw
+                .gpu_of(None)
+                .is_some_and(|g| g.vendor == raptor_runtime::hardware::GpuVendor::Amd),
             spills,
             rocm_installed,
+            cuda_installed,
+            sycl_installed,
             vulkan_installed,
         });
+        let active_backend = self.runtime.status().runtime.map(|r| r.backend);
         let (effective, note) = match resolved {
             Ok(c) => (
-                match c.backend {
+                match c.backend.or(auto_backend).or(active_backend) {
                     Some(Backend::Vulkan) => "vulkan",
                     Some(Backend::Hip) => "rocm",
+                    Some(Backend::Cuda) => "cuda",
+                    Some(Backend::Sycl) => "sycl",
                     _ => "default",
                 }
                 .to_string(),
-                c.notes.first().cloned(),
+                c.notes.first().cloned().or_else(|| {
+                    (preference == crate::backend_choice::BackendPref::Auto)
+                        .then(|| {
+                            auto_backend.map(|b| {
+                                format!("Auto selected the {} runtime for this GPU.", b.label())
+                            })
+                        })
+                        .flatten()
+                }),
             ),
             Err(message) => ("unavailable".to_string(), Some(message)),
         };
@@ -657,6 +733,8 @@ impl AppState {
             preference,
             effective,
             rocm_installed,
+            cuda_installed,
+            sycl_installed,
             vulkan_installed,
             spills,
             note,
@@ -692,16 +770,30 @@ impl AppState {
         hw: &HardwareInfo,
     ) -> Result<Vec<String>> {
         use crate::backend_choice::{resolve, Inputs};
-        let (rocm_installed, vulkan_installed) = self.installed_backends()?;
+        let (rocm_installed, cuda_installed, sycl_installed, vulkan_installed) =
+            self.installed_backends()?;
+        let preference = self.backend_pref(model_id);
         let choice = resolve(&Inputs {
-            pref: self.backend_pref(model_id),
+            pref: preference,
+            amd_gpu: hw
+                .gpu_of(None)
+                .is_some_and(|g| g.vendor == raptor_runtime::hardware::GpuVendor::Amd),
             spills: Self::model_spills(entry, hw),
             rocm_installed,
+            cuda_installed,
+            sycl_installed,
             vulkan_installed,
         })
         .map_err(RaptorError::Conflict)?;
+        let auto_backend = auto_backend_for(
+            &hw,
+            rocm_installed,
+            cuda_installed,
+            sycl_installed,
+            vulkan_installed,
+        );
         let active = self.runtime.status().runtime.map(|r| r.backend);
-        match choice.backend {
+        match choice.backend.or(auto_backend) {
             Some(b) if active != Some(b) => {
                 self.runtime.activate_installed(b)?;
             }
@@ -709,7 +801,7 @@ impl AppState {
             None if active == Some(Backend::Vulkan) => {
                 // An earlier model chose Vulkan; this one wants the normal runtime again (ROCm, or
                 // CUDA on NVIDIA). With neither on disk the Vulkan one stays: it is the only one.
-                for normal in [Backend::Hip, Backend::Cuda] {
+                for normal in [Backend::Hip, Backend::Cuda, Backend::Sycl] {
                     match self.runtime.activate_installed(normal) {
                         Ok(_) => break,
                         Err(RaptorError::NotFound(_)) => {}
@@ -719,7 +811,57 @@ impl AppState {
             }
             None => {}
         }
-        Ok(choice.notes)
+        let mut notes = choice.notes;
+        // Auto may try Vulkan when the selected native runtime cannot initialize a device.
+        // Explicit backend preferences remain strict: their failure must be visible to the user.
+        if preference == crate::backend_choice::BackendPref::Auto {
+            if let Some(selected) = self.runtime.status().runtime.map(|r| r.backend) {
+                if selected != Backend::Vulkan && selected.is_gpu() && vulkan_installed {
+                    let visibility = match self.runtime.preflight_devices().await {
+                        Ok(preflight) if preflight.has_usable_device() => None,
+                        Ok(preflight) => {
+                            Some(preflight.failure.map(|f| f.message).unwrap_or_else(|| {
+                                format!("{} reported no usable device", selected.label())
+                            }))
+                        }
+                        Err(error) => {
+                            Some(format!("{} preflight failed: {error}", selected.label()))
+                        }
+                    };
+                    if let Some(reason) = visibility {
+                        let fallback = self.runtime.activate_installed(Backend::Vulkan);
+                        match fallback {
+                            Ok(_) => match self.runtime.preflight_devices().await {
+                                Ok(preflight) if preflight.has_usable_device() => notes.push(format!(
+                                    "Auto selected Vulkan because {} could not initialize a visible device ({reason}); Vulkan device visibility was verified.",
+                                    selected.label()
+                                )),
+                                Ok(preflight) => {
+                                    let fallback_reason = preflight.failure.map(|f| f.message).unwrap_or_else(|| "no usable device was listed".into());
+                                    self.runtime.activate_installed(selected)?;
+                                    notes.push(format!(
+                                        "Auto kept {}: its device check failed ({reason}), and Vulkan also found no usable device ({fallback_reason}).",
+                                        selected.label()
+                                    ));
+                                }
+                                Err(error) => {
+                                    self.runtime.activate_installed(selected)?;
+                                    notes.push(format!(
+                                        "Auto kept {}: its device check failed ({reason}), and Vulkan preflight failed ({error}).",
+                                        selected.label()
+                                    ));
+                                }
+                            },
+                            Err(error) => notes.push(format!(
+                                "Auto kept {} after its device check failed ({reason}); Vulkan fallback could not be selected ({error}).",
+                                selected.label()
+                            )),
+                        }
+                    }
+                }
+            }
+        }
+        Ok(notes)
     }
 
     pub fn load_runtime_index(&self) -> Result<RuntimeIndex> {
@@ -955,6 +1097,13 @@ impl AppState {
         let ctx = context
             .or(applied_preset.as_ref().map(|p| p.n_ctx))
             .unwrap_or(self.settings.snapshot().context_target);
+        if ctx > crate::settings::MAX_CONTEXT_TARGET {
+            return Err(RaptorError::InvalidInput(format!(
+                "context target cannot exceed {} tokens",
+                crate::settings::MAX_CONTEXT_TARGET
+            ))
+            .into());
+        }
         let settings = self.settings.snapshot();
 
         // A restarted app has forgotten its selection; an installed runtime is picked up again.
@@ -1073,7 +1222,14 @@ impl AppState {
         // What tuning measured on this machine for this model and runtime build wins over the
         // general rules, with the untuned plan kept as the fallback if it cannot start.
         let untuned = config.clone();
-        let tuned = lock(&self.tuned).get(&self.tuned_key(&hw, &entry.sha256, &runtime));
+        let saved_tuning = lock(&self.tuned).get(&self.tuned_key(&hw, &entry.sha256, &runtime));
+        let tuned = saved_tuning.as_ref().filter(|t| {
+            if t.setting_for(config.ctx_size).long {
+                t.matches_long(config.kv_cache, config.flash_attn)
+            } else {
+                t.matches(config.kv_cache, config.flash_attn)
+            }
+        });
         let mut tuned_applied = false;
         if let (Some(t), false) = (&tuned, config.embeddings) {
             // The long-prompt setting (opt-in deep tune) applies to windows as large as the depth
@@ -1103,6 +1259,11 @@ impl AppState {
                     gain
                 )
             });
+        }
+        if saved_tuning.is_some() && tuned.is_none() {
+            rationale.push(
+                "Saved speed settings were measured with different cache or flash-attention settings, so the current load uses its fresh recommendation. Run Optimize speed to refresh the profile.".into(),
+            );
         }
         let probe = lock(&self.gpu_memory).clone();
         let memory_before = probe.read().await.ok();
@@ -1146,6 +1307,12 @@ impl AppState {
         };
         rationale.extend(chosen.notes);
         let config = chosen.config;
+        if config.ctx_size < crate::settings::MIN_CONTEXT_TARGET {
+            rationale.push(format!(
+                "Only {} context tokens fit for this model and machine, below the 65,536-token coding-agent target. The model's trained limit, available memory, and selected GPU offload constrain the effective window.",
+                config.ctx_size
+            ));
+        }
         // Did the load fit in dedicated VRAM, or did the driver spill into shared system memory?
         let gpu_memory = match (memory_before, probe.read().await.ok()) {
             (Some(before), Some(after)) if runtime.backend.is_gpu() => {
@@ -1316,6 +1483,100 @@ impl AppState {
         )
     }
 
+    /// Measures a candidate with the real server and the same fixed streamed request used by
+    /// performance history. One warmup is discarded; reported values are medians of three runs.
+    /// The server is always stopped before this method returns, including on request failure.
+    async fn measure_tune_candidate(
+        &self,
+        base: &LaunchConfig,
+        candidate: &raptor_runtime::tune::Measured,
+    ) -> Result<crate::tuned::TuneMetrics> {
+        let mut config = base.clone();
+        config.gpu_layers = candidate.gpu_layers;
+        config.ubatch_size = candidate.ubatch.min(config.batch_size);
+        self.runtime.load_model(config).await?;
+
+        let measured = async {
+            let status = self.runtime.status();
+            if status.server.state != ServerState::Ready {
+                return Err(RaptorError::Runtime(
+                    "the benchmark server did not remain Ready".into(),
+                ));
+            }
+            if candidate.gpu_layers > 0
+                && !matches!(
+                    status.gpu_verdict,
+                    Some(raptor_runtime::verify::GpuVerdict::Verified { .. })
+                )
+            {
+                return Err(RaptorError::Runtime(format!(
+                    "GPU offload was not verified for the {}-layer benchmark candidate",
+                    candidate.gpu_layers
+                )));
+            }
+            let model = self.upstream.models().await?.loaded.ok_or_else(|| {
+                RaptorError::Runtime("the benchmark server reports no model".into())
+            })?;
+
+            // Warm caches and kernel paths, but do not mix the warmup into the comparison.
+            perf::sample(self.upstream.as_ref(), self.token_counter.clone(), &model).await?;
+            let mut ttft = Vec::with_capacity(3);
+            let mut prompt = Vec::with_capacity(3);
+            let mut generation = Vec::with_capacity(3);
+            let mut exact = true;
+            let mut prompt_tokens = None;
+            let mut output_tokens = None;
+            for _ in 0..3 {
+                let (sample, tokenizer_exact) =
+                    perf::sample(self.upstream.as_ref(), self.token_counter.clone(), &model)
+                        .await?;
+                let after = self.runtime.status();
+                let reasons = perf::assess(
+                    &sample,
+                    base.backend,
+                    after.server.state == ServerState::Ready,
+                    after.gpu_verdict.as_ref(),
+                );
+                if !reasons.is_empty() {
+                    return Err(RaptorError::Runtime(format!(
+                        "benchmark sample was unstable: {}",
+                        reasons.join("; ")
+                    )));
+                }
+                exact &= tokenizer_exact;
+                prompt_tokens.get_or_insert(sample.prompt_tokens);
+                output_tokens.get_or_insert(sample.gen_tokens);
+                ttft.push(sample.ttft_ms);
+                prompt.push(sample.prompt_tps);
+                generation.push(sample.gen_tps);
+            }
+            Ok(crate::tuned::TuneMetrics {
+                gpu_layers: candidate.gpu_layers,
+                ubatch_size: candidate.ubatch,
+                parallel_slots: base.parallel_slots,
+                kv_cache: base.kv_cache,
+                flash_attn: base.flash_attn,
+                speculative: base.speculative.is_some(),
+                prompt_tokens: prompt_tokens.unwrap_or(0),
+                output_tokens: output_tokens.unwrap_or(0),
+                ttft_ms: median(ttft),
+                prompt_tps: median(prompt),
+                gen_tps: median(generation),
+                samples: 3,
+                prompt_tokens_exact: exact,
+            })
+        }
+        .await;
+        let stopped = self.runtime.unload().await;
+        match (measured, stopped) {
+            (Ok(metrics), Ok(())) => Ok(metrics),
+            (Err(error), _) => Err(error),
+            (Ok(_), Err(error)) => Err(RaptorError::Runtime(format!(
+                "the comparison finished, but the benchmark server did not stop: {error}"
+            ))),
+        }
+    }
+
     /// Forgets the tuning of a model, so the general rules apply again. True when there was one.
     pub async fn forget_tuning(&self, model_id: &str) -> Result<bool> {
         let entry = self.models.library().get(model_id)?;
@@ -1356,14 +1617,39 @@ impl AppState {
                 "the llama.cpp runtime is not installed; install it from Settings first".into(),
             )
         })?;
-        let ctx = self.settings.snapshot().context_target;
-        let base = self.recommend_for_entry(&entry, &path, ctx).await?.config;
-        let facts = self.speed_facts(&entry, &base, &hw, runtime.backend);
+        let settings = self.settings.snapshot();
+        let ctx = settings.context_target;
+        let mut base = self
+            .recommend_for_entry(&entry, &path, ctx)
+            .await?
+            .config
+            .with_model(path.clone())?;
+        let recommended_layers = base.gpu_layers;
+        let recommended_config = base.clone();
+        base.parallel_slots = Some(settings.parallel_slots);
+        let mut facts = self.speed_facts(&entry, &base, &hw, runtime.backend);
+        facts.allow_speculation = true;
+        facts.requested_ctx = entry.gguf.context_length.map_or(ctx, |train| {
+            ctx.min(u32::try_from(train).unwrap_or(u32::MAX))
+        });
+        if let Some(kv) = crate::tuning::long_window_cache(&base, &facts) {
+            base.kv_cache = kv;
+            base.flash_attn = true;
+        }
+        // The untuned baseline is exactly the first launch attempt for a normal load. The sweep
+        // varies only layer count and micro-batch around those same cache/speculation/slot flags.
+        if let Some(first) = crate::tuning::plan(&base, &facts).into_iter().next() {
+            base = first.config;
+        }
 
-        let mut layer_counts = vec![base.gpu_layers];
-        if crate::tuning::oversubscription_applies(&base, &facts) {
+        let mut layer_counts = vec![base.gpu_layers, recommended_layers];
+        if crate::tuning::oversubscription_applies(&base, &facts)
+            || crate::tuning::oversubscription_applies(&recommended_config, &facts)
+        {
             layer_counts.push(facts.offload_layers);
         }
+        layer_counts.sort_unstable();
+        layer_counts.dedup();
         self.tune_steps.0.store(0, Relaxed);
         self.tune_steps.1.store(layer_counts.len() as u32, Relaxed);
         let mut results: Vec<raptor_runtime::tune::Measured> = Vec::new();
@@ -1371,7 +1657,7 @@ impl AppState {
         for ngl in &layer_counts {
             match self
                 .runtime
-                .tune_measure(&path, *ngl, base.flash_attn)
+                .tune_measure(&path, *ngl, base.ctx_size, base.kv_cache, base.flash_attn)
                 .await
             {
                 Ok(m) => results.extend(m),
@@ -1436,6 +1722,50 @@ impl AppState {
             .zip(long_baseline_seconds)
             .map(|(lb, base_s)| (base_s / lb.seconds - 1.0) * 100.0);
 
+        // llama-bench gives repeatable prompt/decode throughput but has no first-token latency.
+        // Measure the default and winner through the same streaming server path and workload.
+        let comparison_count = if baseline.is_some()
+            && baseline
+                .as_ref()
+                .is_some_and(|b| b.gpu_layers != best.gpu_layers || b.ubatch != best.ubatch)
+        {
+            2
+        } else if baseline.is_some() {
+            1
+        } else {
+            1
+        };
+        self.tune_steps.1.fetch_add(comparison_count, Relaxed);
+        let baseline_live = if let Some(candidate) = baseline.as_ref() {
+            let result = self.measure_tune_candidate(&base, candidate).await;
+            self.tune_steps.0.fetch_add(1, Relaxed);
+            match result {
+                Ok(metrics) => Some(metrics),
+                Err(e) => {
+                    errors.push(format!("default streamed comparison: {e}"));
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        let same_candidate = baseline
+            .as_ref()
+            .is_some_and(|b| b.gpu_layers == best.gpu_layers && b.ubatch == best.ubatch);
+        let best_live = if same_candidate {
+            baseline_live.clone()
+        } else {
+            let result = self.measure_tune_candidate(&base, &best).await;
+            self.tune_steps.0.fetch_add(1, Relaxed);
+            match result {
+                Ok(metrics) => Some(metrics),
+                Err(e) => {
+                    errors.push(format!("optimized streamed comparison: {e}"));
+                    None
+                }
+            }
+        };
+
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| d.as_secs());
@@ -1452,6 +1782,10 @@ impl AppState {
                 seconds: lb.seconds,
                 baseline_seconds: base_s,
                 depth: raptor_runtime::tune::DEEP_DEPTH,
+                profile: Some(crate::tuned::TuneProfile {
+                    kv_cache: base.kv_cache,
+                    flash_attn: base.flash_attn,
+                }),
             }),
             _ => kept_long,
         };
@@ -1465,15 +1799,31 @@ impl AppState {
                 seconds: best.seconds,
                 baseline_seconds,
                 measured_at: now,
+                profile: Some(crate::tuned::TuneProfile {
+                    kv_cache: base.kv_cache,
+                    flash_attn: base.flash_attn,
+                }),
+                baseline_live: baseline_live.clone(),
+                best_live: best_live.clone(),
                 long,
             },
         )?;
         let improvement_percent = (baseline_seconds / best.seconds - 1.0) * 100.0;
         Ok(TuneReport {
             model_id: model_id.to_string(),
+            runtime_id: runtime.id,
+            runtime_version: runtime.version,
+            backend: runtime.backend,
+            // `ctx` is the user's requested target. `recommend_for_entry` may reduce it to
+            // fit available VRAM, so report the effective context used by both comparison runs.
+            context_size: base.ctx_size,
+            gpu_name: hw.gpu_of(None).map(|g| g.name.clone()),
+            gpu_driver: hw.gpu_of(None).and_then(|g| g.driver.clone()),
             results,
             best,
             baseline,
+            baseline_live,
+            best_live,
             improvement_percent,
             errors,
             long_depth: if long_results.is_empty() {
@@ -1635,7 +1985,7 @@ impl AppState {
     }
 
     /// Measures prefill speed, decode speed, the start latency of a 512-token turn and peak GPU
-    /// memory at 0 / 4K / 16K / 32K / 64K / 128K tokens of context, up to `max_depth`, with the
+    /// memory at 0 / 4K / 16K / 32K / 64K / 128K / 192K tokens of context, up to `max_depth`, with the
     /// cheapest KV-cache type that fits each depth. The model must not be loaded: the benchmark needs
     /// the GPU. A depth that fails or does not fit is kept as a row with the reason; the run fails only
     /// if nothing could be measured. Uses the tuned layers and micro-batch when the model was tuned.
@@ -1913,7 +2263,7 @@ impl AppState {
                 notes,
             };
         };
-        let record = perf::build_record(
+        let mut record = perf::build_record(
             &hw,
             &loaded.model_sha256,
             &loaded.runtime_id,
@@ -1924,6 +2274,12 @@ impl AppState {
             stable,
             perf::now_secs(),
         );
+        record.quant_label = self
+            .models
+            .library()
+            .get(&loaded.model_id)
+            .ok()
+            .and_then(|entry| entry.gguf.quant_label);
         let (recorded, note) = {
             let mut guard = lock(&self.perf);
             perf::store_record(&mut guard, record.clone())
@@ -2446,6 +2802,30 @@ mod tests {
     const BUNDLED: &str = include_str!("../resources/runtime-manifest.json");
 
     #[test]
+    fn auto_prefers_installed_native_runtime_and_uses_vulkan_as_fallback() {
+        let mut hw = crate::testing::fixed_hardware();
+        assert_eq!(
+            auto_backend_for(&hw, true, true, true, true),
+            Some(Backend::Hip)
+        );
+        hw.gpus[0].vendor = raptor_runtime::hardware::GpuVendor::Nvidia;
+        assert_eq!(
+            auto_backend_for(&hw, false, true, true, true),
+            Some(Backend::Cuda)
+        );
+        hw.gpus[0].vendor = raptor_runtime::hardware::GpuVendor::Intel;
+        assert_eq!(
+            auto_backend_for(&hw, true, false, true, true),
+            Some(Backend::Sycl)
+        );
+        assert_eq!(
+            auto_backend_for(&hw, false, false, false, true),
+            Some(Backend::Vulkan)
+        );
+        assert_eq!(auto_backend_for(&hw, false, false, false, false), None);
+    }
+
+    #[test]
     fn the_long_window_for_a_spilling_moe_is_32k_with_a_4_bit_cache_and_one_slot() {
         use raptor_runtime::config::KvCacheType;
         let o = long_option(8_192, 262_144, 14_673).expect("a longer window than the default");
@@ -2692,7 +3072,7 @@ mod tests {
     fn bundled_runtime_manifest_is_valid_and_every_entry_is_verified() {
         let index = parse_runtime_index(BUNDLED).unwrap();
         assert!(index.refused.is_empty(), "{:?}", index.refused);
-        assert_eq!(index.manifests.len(), 6);
+        assert_eq!(index.manifests.len(), 8);
         for m in &index.manifests {
             assert!(m
                 .url
@@ -2752,7 +3132,7 @@ mod tests {
             candidates_for_pin(index.manifests.clone(), None)
                 .unwrap()
                 .len(),
-            6
+            8
         );
     }
 

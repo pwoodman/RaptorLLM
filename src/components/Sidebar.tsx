@@ -22,8 +22,11 @@ export function Sidebar() {
   const page = useStore(uiStore, (s) => s.page);
   const status = useStore(engineStore, (s) => s.status);
   const loaded = useStore(engineStore, (s) => s.loaded);
+  const loadReport = useStore(engineStore, (s) => s.loadReport);
   const serverState = status?.server.state.state ?? null;
   const verdict = verdictSummary(status?.gpu_verdict ?? null);
+  const backend = status?.runtime?.backend ?? null;
+  const loadRecord = loadReport?.benchmark.stable ? loadReport.benchmark.entry?.record : null;
 
   return (
     <aside className="sidebar">
@@ -58,8 +61,28 @@ export function Sidebar() {
         <div className="runtime-model" title={loaded?.modelId ?? undefined}>
           {loaded ? loaded.modelId.split("/").pop() : serverState === "ready" ? "Model not reported" : "No model loaded"}
         </div>
+        {backend !== null && <div className="muted small">{backendLabel(backend)} runtime</div>}
         <div className={`runtime-verdict tone-${verdict.tone}`}>{verdict.label}</div>
+        {loadRecord != null && (
+          <div
+            className="muted small"
+            title={`Measured after load: ${loadRecord.prompt_tps.toFixed(1)} prompt tokens/s; ${loadRecord.gen_tps.toFixed(1)} generation tokens/s; ${Math.round(loadRecord.ttft_ms)} ms to first token`}
+          >
+            {loadRecord.gen_tps.toFixed(1)} tok/s · {Math.round(loadRecord.ttft_ms)} ms first token
+          </div>
+        )}
       </div>
     </aside>
   );
+}
+
+function backendLabel(backend: string): string {
+  const labels: Record<string, string> = {
+    hip: "ROCm",
+    cuda: "CUDA",
+    sycl: "SYCL",
+    vulkan: "Vulkan",
+    cpu: "CPU",
+  };
+  return labels[backend] ?? backend.toUpperCase();
 }

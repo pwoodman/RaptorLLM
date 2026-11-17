@@ -110,7 +110,7 @@ the same options are given explicitly.
 | `settings_set_gateway_port` | `port` | `SettingsView` | Applied live. Reverted if the gateway refuses it. |
 | `settings_set_gateway_enabled` | `enabled` | `GatewayStatus` | |
 | `settings_set_lan` | `enabled` | `SettingsView` | `true` is refused with `Unauthorized` unless an API key exists. |
-| `settings_set_context_target` | `tokens` (512-131072) | `SettingsView` | |
+| `settings_set_context_target` | `tokens` (65536-200000) | `SettingsView` | Target; effective load context can be lower when model or hardware limits apply. |
 | `settings_set_allow_cpu_fallback` | `enabled` | `SettingsViewV2` | Off by default. On: a load whose GPU backend has no device runs on CPU, and the result has `cpu_fallback: true`. `SettingsViewV2` adds `embedding_model` and `allow_cpu_fallback` to `SettingsView`. |
 | `api_key_rotate` | - | `ApiKeyReveal` | Creates or replaces the key. Show the secret once. |
 | `api_key_revoke` | - | `SettingsView` | Refused with `Unauthorized` while LAN is enabled. |

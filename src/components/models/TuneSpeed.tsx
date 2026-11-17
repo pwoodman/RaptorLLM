@@ -10,6 +10,16 @@ export function tps(n: number): string {
   return `${n >= 100 ? Math.round(n).toLocaleString() : n.toFixed(1)} tok/s`;
 }
 
+function percentChange(base: number, candidate: number): string {
+  if (base <= 0) return "n/a";
+  const delta = Math.round(((candidate - base) / base) * 100);
+  return `${delta > 0 ? "+" : ""}${delta}%`;
+}
+
+function formatTtft(ms: number): string {
+  return ms >= 1000 ? `${(ms / 1000).toFixed(2)} s` : `${Math.round(ms)} ms`;
+}
+
 /** What the result means in a sentence. Pure, for testing. */
 export function tuneSummary(r: TuneReport): string {
   const b = r.best;
@@ -39,7 +49,7 @@ export function longTuneSummary(r: TuneReport): string | null {
  * remembers the fastest, so loads use it. It runs a benchmark on the GPU for a few minutes, so it
  * is offered only while no model is loaded, and it asks first.
  */
-export function TuneSpeed({ entry, disabled }: { entry: ModelEntry; disabled: boolean }) {
+export function TuneSpeed({ entry, disabled, onRunningChange }: { entry: ModelEntry; disabled: boolean; onRunningChange?: (running: boolean) => void }) {
   const [asking, setAsking] = useState(false);
   const [deep, setDeep] = useState(false);
   const [running, setRunning] = useState(false);
@@ -70,6 +80,7 @@ export function TuneSpeed({ entry, disabled }: { entry: ModelEntry; disabled: bo
   async function start() {
     setAsking(false);
     setRunning(true);
+    onRunningChange?.(true);
     setError(null);
     setReport(null);
     try {
@@ -78,6 +89,7 @@ export function TuneSpeed({ entry, disabled }: { entry: ModelEntry; disabled: bo
       setError(messageOf(e));
     } finally {
       setRunning(false);
+      onRunningChange?.(false);
     }
   }
 
@@ -109,7 +121,7 @@ export function TuneSpeed({ entry, disabled }: { entry: ModelEntry; disabled: bo
             value={progress && progress.total > 0 ? progress.done : undefined}
           />
           <p className="small muted">
-            Measuring{progress && progress.total > 0 ? ` (${progress.done} of ${progress.total} setups done)` : ""}. This
+            Measuring{progress && progress.total > 0 ? ` (${progress.done} of ${progress.total} benchmark steps done)` : ""}. This
             takes {deep ? "several minutes, longer than a quick tune" : "a few minutes"}. Keep the app open.
           </p>
         </div>
@@ -122,6 +134,63 @@ export function TuneSpeed({ entry, disabled }: { entry: ModelEntry; disabled: bo
       {report !== null && (
         <div className="tune-report">
           <p className="small">{tuneSummary(report)}</p>
+          {report.baseline !== null && (
+            <div className="table-wrap">
+              <table className="small tune-table" aria-label="Default and Raptor optimized speed comparison">
+                <thead>
+                  <tr><th>Configuration</th><th>Prompt</th><th>Generation</th><th>Time to first token</th></tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <th scope="row">Default</th>
+                    <td>{report.baseline_live ? tps(report.baseline_live.prompt_tps) : tps(report.baseline.prompt_tps)}</td>
+                    <td>{report.baseline_live ? tps(report.baseline_live.gen_tps) : tps(report.baseline.gen_tps)}</td>
+                    <td>{report.baseline_live ? formatTtft(report.baseline_live.ttft_ms) : "Not measured"}</td>
+                  </tr>
+                  <tr className="best">
+                    <th scope="row">Raptor optimized</th>
+                    <td>
+                      {report.best_live ? tps(report.best_live.prompt_tps) : tps(report.best.prompt_tps)}
+                      {report.baseline_live && report.best_live && (
+                        <span className="muted small"> ({percentChange(report.baseline_live.prompt_tps, report.best_live.prompt_tps)})</span>
+                      )}
+                    </td>
+                    <td>
+                      {report.best_live ? tps(report.best_live.gen_tps) : tps(report.best.gen_tps)}
+                      {report.baseline_live && report.best_live && (
+                        <span className="muted small"> ({percentChange(report.baseline_live.gen_tps, report.best_live.gen_tps)})</span>
+                      )}
+                    </td>
+                    <td>
+                      {report.best_live ? formatTtft(report.best_live.ttft_ms) : "Not measured"}
+                      {report.baseline_live && report.best_live && (
+                        <span className="muted small"> ({percentChange(report.baseline_live.ttft_ms, report.best_live.ttft_ms)})</span>
+                      )}
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+              {report.baseline_live && report.best_live ? (
+                <p className="muted small">
+                  {entry.gguf.quant_label ?? "Unknown quantization"} model on {report.gpu_name ?? "unknown GPU"}
+                  {report.gpu_driver ? ` (driver ${report.gpu_driver})` : " (driver unknown)"}; matched streamed requests on {report.runtime_id ?? "the selected runtime"} {report.runtime_version ?? ""}
+                  {report.backend ? ` (${report.backend.toUpperCase()})` : ""}, {report.context_size?.toLocaleString() ?? "same"} context,
+                  {report.baseline_live.prompt_tokens_exact ? " exact" : " estimated"} {report.baseline_live.prompt_tokens} prompt tokens,
+                  and a 64-token output limit. Values are medians after one warm-up and 3 measured samples per configuration.
+                  The percentage is candidate vs default; negative TTFT change is faster. KV cache {report.baseline_live.kv_cache},
+                  flash attention {report.baseline_live.flash_attn ? "on" : "off"}, speculation {report.baseline_live.speculative ? "on" : "off"}. Default used {report.baseline_live.gpu_layers} GPU layers and micro-batch {report.baseline_live.ubatch_size}; optimized used {report.best_live.gpu_layers} layers and micro-batch {report.best_live.ubatch_size}.
+                  {report.baseline_live.parallel_slots ? ` Both runs used ${report.baseline_live.parallel_slots} request slots.` : ""}
+                </p>
+              ) : (
+                <p className="muted small">
+                  Prompt and generation use 3 llama-bench repeats at {report.context_size?.toLocaleString() ?? "the selected"} context, with the same cache and flash-attention mode as the default load, a 2,048-token prompt and 64-token reply. TTFT needs a live
+                  streamed comparison and was not measured for this run; llama-bench does not report it. The default/optimized
+                  request-time estimate is {report.baseline.seconds.toFixed(1)} s / {report.best.seconds.toFixed(1)} s
+                  ({Math.round(report.improvement_percent)}% faster by the tuning score).
+                </p>
+              )}
+            </div>
+          )}
           {longTuneSummary(report) !== null && <p className="small">{longTuneSummary(report)}</p>}
           <table className="small tune-table" aria-label="Measured settings">
             <thead>
@@ -161,9 +230,9 @@ export function TuneSpeed({ entry, disabled }: { entry: ModelEntry; disabled: bo
         onConfirm={() => void start()}
       >
         <p>
-          Raptor will run a short benchmark of this model on the GPU at a few settings and keep the fastest. It takes a
-          few minutes, loads the model several times, and uses the GPU and a lot of memory meanwhile, so close other
-          heavy programs. Nothing is changed in the model file.
+          Raptor will run a 3-repeat speed sweep, then compare the default and fastest settings with a warm-up and 3 streamed
+          requests each so it can measure time to first token. It takes a few minutes, starts the model several times, and
+          uses the GPU and model memory meanwhile, so close other heavy programs. Nothing is changed in the model file.
         </p>
         <label className="small">
           <input type="checkbox" checked={deep} onChange={(e) => setDeep(e.target.checked)} /> Also tune for long

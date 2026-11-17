@@ -21,6 +21,24 @@
       "sha256": "a2c7a2bfaaf57b5357f84cf584603d088143a5be08c68cb623e6d9bb7db664e8"
     },
     {
+      "id": "llama-cuda-win",
+      "version": "b12340",
+      "llama_cpp_build": "b12340",
+      "backend": "cuda",
+      "os": "windows",
+      "url": "https://github.com/ggml-org/llama.cpp/releases/download/b12340/llama-b12340-bin-win-cuda-13.5-x64.zip",
+      "sha256": "31013c2a0d7ed93489862613a08f34658861996741b310ee3fa9e27ec139642b"
+    },
+    {
+      "id": "llama-sycl-win",
+      "version": "b12340",
+      "llama_cpp_build": "b12340",
+      "backend": "sycl",
+      "os": "windows",
+      "url": "https://github.com/ggml-org/llama.cpp/releases/download/b12340/llama-b12340-bin-win-sycl-x64.zip",
+      "sha256": "f85c767de26d1d23735d8ec54463d6e833c4f23371f6a010cbd7f494f44be339"
+    },
+    {
       "id": "llama-cpu-win",
       "version": "b12340",
       "llama_cpp_build": "b12340",

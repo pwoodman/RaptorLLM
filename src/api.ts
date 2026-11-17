@@ -65,7 +65,7 @@ export interface ChatMessage {
 
 export type Os = "windows" | "linux" | "macos" | "other";
 export type GpuVendor = "amd" | "nvidia" | "intel" | "other";
-export type Backend = "hip" | "cuda" | "vulkan" | "cpu";
+export type Backend = "hip" | "cuda" | "sycl" | "vulkan" | "cpu";
 export type KvCacheType = "f16" | "q8_0" | "q4_0";
 
 export interface CpuInfo {
@@ -257,9 +257,17 @@ export interface TuneMeasured {
 
 export interface TuneReport {
   model_id: string;
+  runtime_id?: string;
+  runtime_version?: string;
+  backend?: Backend;
+  context_size?: number;
+  gpu_name?: string | null;
+  gpu_driver?: string | null;
   results: TuneMeasured[];
   best: TuneMeasured;
   baseline: TuneMeasured | null;
+  baseline_live?: TuneMetrics | null;
+  best_live?: TuneMetrics | null;
   /** How much less time the best setup takes than the untuned one; 0 when the default was best. */
   improvement_percent: number;
   errors: string[];
@@ -270,6 +278,22 @@ export interface TuneReport {
   long_improvement_percent: number | null;
   /** Depth of `long_results`; 0 when no deep tune ran. */
   long_depth: number;
+}
+
+export interface TuneMetrics {
+  gpu_layers: number;
+  ubatch_size: number;
+  parallel_slots?: number | null;
+  kv_cache: KvCacheType;
+  flash_attn: boolean;
+  speculative: boolean;
+  prompt_tokens: number;
+  output_tokens: number;
+  ttft_ms: number;
+  prompt_tps: number;
+  gen_tps: number;
+  samples: number;
+  prompt_tokens_exact: boolean;
 }
 
 /** One context length of the benchmark matrix. Numbers are null when it could not be measured. */
@@ -827,14 +851,16 @@ export interface DependencyReport {
   vulkan: VulkanOffer | null;
 }
 
-export type BackendPref = "auto" | "rocm" | "vulkan";
+export type BackendPref = "auto" | "rocm" | "cuda" | "sycl" | "vulkan";
 
-/** The ROCm / Vulkan choice of one model. `effective` is what a load would use now. */
+/** The accelerator choice of one model. `effective` is what a load would use now. */
 export interface BackendView {
   model_id: string;
   preference: BackendPref;
-  effective: "rocm" | "vulkan" | "default" | "unavailable";
+  effective: "rocm" | "cuda" | "sycl" | "vulkan" | "default" | "unavailable";
   rocm_installed: boolean;
+  cuda_installed: boolean;
+  sycl_installed: boolean;
   vulkan_installed: boolean;
   /** A sparse Mixture-of-experts model larger than VRAM: the kind Vulkan generated faster on. */
   spills: boolean;
@@ -1048,6 +1074,8 @@ export interface ConfigSnapshot {
   threads: number;
   flash_attn: boolean;
   kv_cache: KvCacheType;
+  speculative?: "ngram" | "mtp" | "dflash" | null;
+  uses_draft_model?: boolean;
 }
 
 export interface BenchRecord {
@@ -1055,6 +1083,9 @@ export interface BenchRecord {
   model_hash: string;
   runtime_id: string;
   runtime_version: string;
+  gpu_name?: string | null;
+  gpu_driver?: string | null;
+  quant_label?: string | null;
   config: ConfigSnapshot;
   /** Time to first token. */
   ttft_ms: number;

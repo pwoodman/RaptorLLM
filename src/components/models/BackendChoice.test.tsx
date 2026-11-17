@@ -21,6 +21,8 @@ function view(over: Partial<BackendView> = {}): BackendView {
     preference: "auto",
     effective: "default",
     rocm_installed: true,
+    cuda_installed: false,
+    sycl_installed: false,
     vulkan_installed: true,
     spills: false,
     note: null,

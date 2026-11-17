@@ -290,6 +290,9 @@ pub fn build_record(
         model_hash: model_sha256.to_string(),
         runtime_id: runtime_id.to_string(),
         runtime_version: runtime_version.to_string(),
+        gpu_name: hw.gpu_of(None).map(|g| g.name.clone()),
+        gpu_driver: hw.gpu_of(None).and_then(|g| g.driver.clone()),
+        quant_label: None,
         config,
         ttft_ms,
         prompt_tps,
@@ -413,6 +416,11 @@ pub fn known_good(
         .flash_attn(c.flash_attn)
         .kv_cache(c.kv_cache)
         .build()?;
+    if c.uses_draft_model {
+        return Ok(None);
+    }
+    let mut config = config;
+    config.speculative = c.speculative;
     Ok(Some(KnownGood {
         record: record.clone(),
         config,
@@ -636,6 +644,8 @@ mod tests {
             threads: 8,
             flash_attn: true,
             kv_cache: KvCacheType::F16,
+            speculative: None,
+            uses_draft_model: false,
         };
         let a = build_record(
             &hw,
@@ -688,6 +698,8 @@ mod tests {
             threads: 4,
             flash_attn: false,
             kv_cache: KvCacheType::F16,
+            speculative: None,
+            uses_draft_model: false,
         };
         let r = build_record(&hw, "h", "llama-cpu-win", "b1", cfg, None, (0, 0), false, 5);
         assert!(!r.stable);
@@ -711,6 +723,8 @@ mod tests {
             threads: 8,
             flash_attn: true,
             kv_cache: KvCacheType::F16,
+            speculative: None,
+            uses_draft_model: false,
         };
         let s = BenchSample {
             ttft_ms: 300.0,
@@ -763,6 +777,8 @@ mod tests {
             threads: 6,
             flash_attn: true,
             kv_cache: KvCacheType::Q8_0,
+            speculative: None,
+            uses_draft_model: false,
         };
         let s = BenchSample {
             ttft_ms: 200.0,
@@ -812,6 +828,8 @@ mod tests {
             threads: 8,
             flash_attn: true,
             kv_cache: KvCacheType::F16,
+            speculative: None,
+            uses_draft_model: false,
         };
         let mk = |ctx, gen| {
             let s = BenchSample {

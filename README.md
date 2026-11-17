@@ -12,7 +12,7 @@ Raptor LLM is organized as a high-performance Cargo workspace with dedicated, de
   - **Settings**: Hardware probing, runtime installation and rollback, honest GPU offload verdict verification, API key rotation and digest authentication, LAN binding toggle, and workspace context management.
 - **Independent Rust Subsystems**:
   - `raptor-core`: Shared error types, configuration structures, and token counting traits.
-  - `raptor-runtime`: Hardware detection (PowerShell/DXGI on Windows, sysfs/lspci/rocminfo on Linux), signed runtime manifest installation and rollback, job-supervised `llama-server` process lifecycle, and evidence-based GPU verification (HIP/ROCm `gfx1200`, CUDA, Vulkan, CPU).
+  - `raptor-runtime`: Hardware detection (PowerShell/DXGI on Windows, sysfs/lspci/rocminfo on Linux), hash-verified runtime installation and rollback, job-supervised `llama-server` process lifecycle, and evidence-based GPU verification (HIP/ROCm, CUDA, SYCL, Vulkan, CPU).
   - `raptor-models`: Hugging Face API discovery, pure GGUF header parser, quantization recommendation engine, resumable downloads with SHA-256 integrity checks, and local model library.
   - `raptor-context`: High-priority Context Intelligence engine with repo indexing, dependency graph, BM25 retrieval, task-specific dynamic token budget packing, protected instruction preservation, and provenance tracking.
   - `raptor-gateway`: Axum-based HTTP gateway providing OpenAI endpoints (`/v1/chat/completions`, `/v1/models`), Anthropic translation (`/v1/messages`), MCP tools surface (`context_build`, `context_search`, `repo_symbols`, `repo_read_file`), and Bearer API key authentication.
@@ -23,7 +23,7 @@ Raptor LLM is organized as a high-performance Cargo workspace with dedicated, de
 - Node.js 20+
 - Rust stable (1.80+)
 - Windows 11 / 10, or Linux (with WebKit2GTK prerequisites)
-- For AMD acceleration: compatible AMD ROCm driver/environment and a llama.cpp build supporting your GPU architecture (e.g. `gfx1200` for Radeon RX 9060 XT). Raptor LLM never silently claims CPU fallback is GPU acceleration.
+- Windows GPU runtimes: AMD HIP/ROCm, NVIDIA CUDA, Intel SYCL, with Vulkan available as a cross-vendor fallback. A runtime is usable only when its bundled llama.cpp build can see a device; Raptor checks this before loading and verifies offload from the server log. Hardware-level validation results are tracked in [the Windows GPU matrix](docs/WINDOWS_GPU_VALIDATION.md). Raptor LLM never silently claims CPU fallback is GPU acceleration.
 
 ## Development
 

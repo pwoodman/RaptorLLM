@@ -479,7 +479,7 @@ pub async fn models_set_backend(
 }
 
 /// Measures prefill speed, decode speed, the latency of a 512-token turn and peak GPU memory at
-/// growing context lengths (0, 4K, 16K, 32K, 64K, 128K, up to `max_depth`, default 32,768), with
+/// growing context lengths (0, 4K, 16K, 32K, 64K, 128K, 192K, up to `max_depth`, default 32,768), with
 /// the cheapest KV cache that fits each. Takes minutes (a 128K run can take 20+). The model must
 /// not be loaded. Poll `models_tune_progress` for steps done.
 #[tauri::command]
@@ -488,7 +488,9 @@ pub async fn models_context_matrix(
     model_id: String,
     max_depth: Option<u32>,
 ) -> Result<crate::ctxbench::MatrixReport> {
-    let depth = max_depth.unwrap_or(32_768).clamp(4096, 131_072);
+    let depth = max_depth
+        .unwrap_or(32_768)
+        .clamp(4096, raptor_runtime::context_max::MAX_CONTEXT_TOKENS);
     state.context_matrix(&model_id, depth).await
 }
 

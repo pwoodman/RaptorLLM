@@ -79,13 +79,17 @@ fn gib(bytes: u64) -> f64 {
 
 fn hardware_detail(hw: &HardwareInfo) -> String {
     match hw.gpus.first() {
-        Some(g) => format!(
-            "{} ({}), {:.0} GiB VRAM, {:.0} GiB RAM",
-            g.name,
-            g.arch.as_deref().unwrap_or("arch unknown"),
-            gib(g.vram_total),
-            gib(hw.ram_total)
-        ),
+        Some(g) => {
+            let driver = g.driver.as_deref().unwrap_or("driver version unavailable");
+            format!(
+                "{} ({}), {:.0} GiB VRAM, driver {}, {:.0} GiB RAM",
+                g.name,
+                g.arch.as_deref().unwrap_or("arch unknown"),
+                gib(g.vram_total),
+                driver,
+                gib(hw.ram_total)
+            )
+        }
         None => format!("no GPU found, {:.0} GiB RAM", gib(hw.ram_total)),
     }
 }
@@ -299,6 +303,7 @@ mod tests {
         assert!(s.runtime_needs_confirmation);
         assert!(!check(&s, "model").ok);
         assert!(s.selected_runtime.is_none());
+        assert!(check(&s, "hardware").detail.contains("32.0.12019.1024"));
     }
 
     #[test]

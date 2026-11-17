@@ -1,15 +1,18 @@
-//! Real-hardware gate. Ignored by default: it needs an AMD GPU with the HIP SDK,
-//! a llama.cpp runtime folder, and a GGUF model. Nothing here runs in CI.
+//! Real-hardware gates. Ignored by default: they need a matching GPU, llama.cpp
+//! runtime folder, and GGUF model. Nothing here runs in CI.
 //!
 //! Environment (Git Bash):
 //!   RAPTOR_TEST_RUNTIME_DIR  folder containing llama-server.exe
 //!   RAPTOR_TEST_MODEL        path to a .gguf model
+//!   RAPTOR_TEST_BACKEND      hip (default), cuda, sycl, or vulkan
 //!
 //! Runs (one at a time: both use port 18090):
 //!   RAPTOR_TEST_RUNTIME_DIR=.../exp RAPTOR_TEST_MODEL=.../m.gguf \
 //!     cargo test -p raptor-runtime --test gate_real_hardware -- --ignored --nocapture gate_gpu_runtime_verified
 //!   RAPTOR_TEST_RUNTIME_DIR=.../bin RAPTOR_TEST_MODEL=.../m.gguf \
 //!     cargo test -p raptor-runtime --test gate_real_hardware -- --ignored --nocapture gate_stock_runtime_fails_loudly
+//!   RAPTOR_TEST_BACKEND=sycl RAPTOR_TEST_RUNTIME_DIR=.../sycl RAPTOR_TEST_MODEL=.../m.gguf \
+//!     cargo test -p raptor-runtime --test gate_real_hardware -- --ignored --nocapture gate_selected_backend_verified
 //!
 //! The first test expects GPU offload to be verified from the log and a chat
 //! completion to work. The second expects a loud device failure with the typed
@@ -69,8 +72,8 @@ fn model_path() -> PathBuf {
     model
 }
 
-fn gpu_config(model: PathBuf) -> LaunchConfig {
-    LaunchConfig::builder(model, Backend::Hip)
+fn gpu_config(model: PathBuf, backend: Backend) -> LaunchConfig {
+    LaunchConfig::builder(model, backend)
         .gpu_layers(999)
         .ctx_size(4096)
         .port(PORT)
@@ -78,18 +81,28 @@ fn gpu_config(model: PathBuf) -> LaunchConfig {
         .expect("valid launch config")
 }
 
-/// Device preflight with the same PATH the server gets. Asserts a usable ROCm device.
-async fn device_env(binary: &Path) -> Vec<(String, String)> {
-    let sdk = HipSdkSearch::system();
-    let bins = sdk.bin_dirs();
+/// Device preflight with the same PATH the server gets. Asserts a usable selected-backend device.
+async fn device_env(binary: &Path, backend: Backend) -> Vec<(String, String)> {
+    let bins = if backend == Backend::Hip {
+        HipSdkSearch::system().bin_dirs()
+    } else {
+        Vec::new()
+    };
     let current = std::env::var("PATH").ok();
     let env = devices::launch_env(&bins, current.as_deref()).expect("PATH");
-    println!("HIP SDK bin folders first on PATH: {:?}", bins.first());
-    let pf = devices::preflight(&SystemCommandRunner, binary, Backend::Hip, bins, &env)
+    println!(
+        "{backend:?} runtime dependency folders first on PATH: {:?}",
+        bins.first()
+    );
+    let pf = devices::preflight(&SystemCommandRunner, binary, backend, bins, &env)
         .await
         .expect("llama-server --list-devices runs");
     println!("devices: {:?}", pf.devices);
-    assert!(pf.has_usable_device(), "no ROCm device: {:?}", pf.failure);
+    assert!(
+        pf.has_usable_device(),
+        "no usable {backend:?} device: {:?}",
+        pf.failure
+    );
     env
 }
 
@@ -123,6 +136,7 @@ async fn run_gpu_gate(
     binary: &Path,
     env: Vec<(String, String)>,
     require_full: bool,
+    backend: Backend,
 ) {
     // Real server through ServerManager and SystemSpawner.
     let sink = Arc::new(CountingSink::default());
@@ -150,7 +164,7 @@ async fn run_gpu_gate(
 
     // Verdict from the server's own log.
     tokio::time::sleep(Duration::from_millis(500)).await;
-    let verdict = verify_gpu(Backend::Hip, &parse_server_log(&manager.log_text()));
+    let verdict = verify_gpu(backend, &parse_server_log(&manager.log_text()));
     println!("verdict: {verdict:?}");
     match &verdict {
         GpuVerdict::Verified {
@@ -224,8 +238,41 @@ async fn run_gpu_gate(
 async fn gate_gpu_runtime_verified() {
     let _guard = GATE.lock().await;
     let binary = runtime_binary();
-    let env = device_env(&binary).await;
-    run_gpu_gate(gpu_config(model_path()), &binary, env, true).await;
+    let env = device_env(&binary, Backend::Hip).await;
+    run_gpu_gate(
+        gpu_config(model_path(), Backend::Hip),
+        &binary,
+        env,
+        true,
+        Backend::Hip,
+    )
+    .await;
+}
+
+/// Check one physical backend end to end before marking a device/runtime combination validated.
+#[tokio::test]
+#[ignore = "requires a physical GPU, matching llama.cpp runtime, and a local GGUF model"]
+async fn gate_selected_backend_verified() {
+    let _guard = GATE.lock().await;
+    let backend = match std::env::var("RAPTOR_TEST_BACKEND").as_deref() {
+        Ok("cuda") => Backend::Cuda,
+        Ok("sycl") => Backend::Sycl,
+        Ok("vulkan") => Backend::Vulkan,
+        Ok("hip") | Err(_) => Backend::Hip,
+        Ok(other) => {
+            panic!("unsupported RAPTOR_TEST_BACKEND {other:?}; choose hip, cuda, sycl, or vulkan")
+        }
+    };
+    let binary = runtime_binary();
+    let env = device_env(&binary, backend).await;
+    run_gpu_gate(
+        gpu_config(model_path(), backend),
+        &binary,
+        env,
+        false,
+        backend,
+    )
+    .await;
 }
 
 /// The recommended config for ctx 8192. Hardware comes from the probe, the
@@ -239,7 +286,7 @@ async fn gate_recommended_config_full_offload() {
     let _guard = GATE.lock().await;
     let binary = runtime_binary();
     let model = model_path();
-    let env = device_env(&binary).await;
+    let env = device_env(&binary, Backend::Hip).await;
     let hw = SystemProbe::new(Arc::new(SystemCommandRunner))
         .probe()
         .await
@@ -279,7 +326,7 @@ async fn gate_recommended_config_full_offload() {
     // The recommendation keeps the shell's default port; the gate uses its own.
     let mut cfg = rec.config.with_model(model).expect("model path");
     cfg.port = PORT;
-    run_gpu_gate(cfg, &binary, env, true).await;
+    run_gpu_gate(cfg, &binary, env, true, Backend::Hip).await;
 }
 
 /// Baseline for comparison: the config the shell produced before this change
@@ -289,14 +336,14 @@ async fn gate_recommended_config_full_offload() {
 async fn gate_baseline_65_of_66_layers() {
     let _guard = GATE.lock().await;
     let binary = runtime_binary();
-    let env = device_env(&binary).await;
+    let env = device_env(&binary, Backend::Hip).await;
     let cfg = LaunchConfig::builder(model_path(), Backend::Hip)
         .gpu_layers(65)
         .ctx_size(8192)
         .port(PORT)
         .build()
         .expect("valid launch config");
-    run_gpu_gate(cfg, &binary, env, false).await;
+    run_gpu_gate(cfg, &binary, env, false, Backend::Hip).await;
 }
 
 /// The stock zip's ggml-hip.dll needs hipblas.dll. HIP SDK 7.1 ships only
@@ -340,7 +387,7 @@ async fn gate_stock_runtime_fails_loudly() {
         .use_local_runtime(&binary, Backend::Hip)
         .expect("runtime folder accepted");
 
-    let result = engine.load_model(gpu_config(model)).await;
+    let result = engine.load_model(gpu_config(model, Backend::Hip)).await;
     // Never leave a server running, even when the assertions below fail.
     if result.is_ok() {
         let _ = engine.unload().await;

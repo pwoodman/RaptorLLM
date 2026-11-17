@@ -99,6 +99,8 @@ fn backend_for_id(id: &str) -> Option<Backend> {
         Some(Backend::Hip)
     } else if id.starts_with("CUDA") {
         Some(Backend::Cuda)
+    } else if id.starts_with("SYCL") {
+        Some(Backend::Sycl)
     } else if id.starts_with("Vulkan") {
         Some(Backend::Vulkan)
     } else if id.starts_with("CPU") {

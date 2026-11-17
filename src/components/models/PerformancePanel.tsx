@@ -12,7 +12,7 @@ import {
 } from "../../api";
 import { useAsyncResource } from "../../hooks/useAsyncResource";
 import { useStore } from "../../hooks/useStore";
-import { formatBytes } from "../../lib/format";
+import { formatBytes, formatCount } from "../../lib/format";
 import { engineStore } from "../../state/engine";
 import { EmptyState, ErrorState, LoadingState } from "../AsyncState";
 import { Notice } from "../Notice";
@@ -164,11 +164,25 @@ function History({ entries, modelName }: { entries: PerfEntry[]; modelName: stri
         <tbody>
           {entries.map((entry) => {
             const r = entry.record;
+            const hardware = [
+              r.gpu_name ?? "GPU unknown",
+              r.gpu_driver ? `driver ${r.gpu_driver}` : null,
+              r.quant_label ?? "quant unknown",
+            ].filter(Boolean).join(" · ");
+            const acceleration = [
+              `${formatCount(r.config.ctx_size)} context`,
+              `${r.config.kv_cache} KV`,
+              `flash attention ${r.config.flash_attn ? "on" : "off"}`,
+              r.config.speculative ? `speculation ${r.config.speculative}` : "no speculation",
+              r.config.uses_draft_model ? "draft model" : null,
+            ].filter(Boolean).join(" · ");
             return (
               <tr key={entry.id} className={r.stable ? undefined : "perf-unstable"}>
                 <td>{new Date(r.measured_at * 1000).toLocaleString()}</td>
                 <td>
                   {r.runtime_id} {r.runtime_version}
+                  <div className="muted small">{hardware}</div>
+                  <div className="muted small">{acceleration}</div>
                 </td>
                 <td>{r.config.gpu_layers}</td>
                 <td>{formatMs(r.ttft_ms)}</td>

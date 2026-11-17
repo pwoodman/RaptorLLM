@@ -1,5 +1,5 @@
 //! The context-length benchmark matrix: how fast a model prefills and decodes at 0 / 4K / 16K /
-//! 32K / 64K / 128K tokens of context, how long a follow-up turn takes to start, and how much GPU
+//! 32K / 64K / 128K / 192K tokens of context, how long a follow-up turn takes to start, and how much GPU
 //! memory it needs at each. A 4K speed says little about a 128K coding session (Qwen3.8-27B: 19.5
 //! tok/s decode at 16K vs 13.6 at 82K, prefill 590 vs 408), so the matrix measures them.
 //!
@@ -12,7 +12,7 @@ use crate::config::KvCacheType;
 use serde::{Deserialize, Serialize};
 
 /// Depths measured, in tokens. 0 is the baseline.
-pub const DEPTHS: [u32; 6] = [0, 4096, 16_384, 32_768, 65_536, 131_072];
+pub const DEPTHS: [u32; 7] = [0, 4096, 16_384, 32_768, 65_536, 131_072, 196_608];
 /// Tokens of the follow-up turn whose start latency is reported.
 pub const TURN_TOKENS: u32 = 512;
 /// Room above a depth for the 512-token turn, the 64-token reply and the server's own slack.
@@ -111,7 +111,7 @@ mod tests {
 
     #[test]
     fn every_requested_depth_is_planned_with_the_cheapest_cache_that_fits() {
-        let (plan, skipped) = plan_depths(131_072, 262_144, &ALL_FIT);
+        let (plan, skipped) = plan_depths(200_000, 262_144, &ALL_FIT);
         assert!(skipped.is_empty());
         assert_eq!(plan.len(), DEPTHS.len());
         assert!(

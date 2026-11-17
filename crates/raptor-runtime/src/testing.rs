@@ -41,6 +41,7 @@ pub struct FakeRunner {
     /// Answer for any program without its own entry (engine tests use install paths).
     fallback: Mutex<Option<String>>,
     last_env: Mutex<Vec<(String, String)>>,
+    last_args: Mutex<Vec<String>>,
 }
 
 impl FakeRunner {
@@ -61,6 +62,10 @@ impl FakeRunner {
     pub fn last_env(&self) -> Vec<(String, String)> {
         lock(&self.last_env).clone()
     }
+    /// Arguments passed to the most recent process call.
+    pub fn last_args(&self) -> Vec<String> {
+        lock(&self.last_args).clone()
+    }
 }
 
 #[async_trait]
@@ -72,11 +77,12 @@ impl CommandRunner for FakeRunner {
     async fn run_with_env(
         &self,
         program: &str,
-        _args: &[String],
+        args: &[String],
         env: &[(String, String)],
         _timeout: Duration,
     ) -> Result<String> {
         *lock(&self.last_env) = env.to_vec();
+        *lock(&self.last_args) = args.to_vec();
         match lock(&self.outputs).get(program) {
             Some(Ok(out)) => return Ok(out.clone()),
             Some(Err(msg)) => return Err(RaptorError::Runtime(msg.clone())),

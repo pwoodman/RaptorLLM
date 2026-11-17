@@ -33,6 +33,12 @@ pub const DEEP_DEPTH: u32 = 16_384;
 /// A model that cannot be benchmarked in this long is reported as failed, not waited on forever.
 const BENCH_TIMEOUT: Duration = Duration::from_secs(20 * 60);
 
+/// Existing context tokens needed so the measured prompt and generated reply reach the effective
+/// window used by the app.
+fn bench_depth(context_size: u32) -> u32 {
+    context_size.saturating_sub(BENCH_PROMPT_TOKENS + BENCH_REPLY_TOKENS)
+}
+
 #[cfg(windows)]
 pub const BENCH_BINARY: &str = "llama-bench.exe";
 #[cfg(not(windows))]
@@ -114,16 +120,21 @@ fn parse_rows(json: &str) -> Result<Vec<Row>> {
 /// Pairs the prompt-processing and generation rows of each micro-batch into [`Measured`].
 /// A micro-batch with only one of the two is dropped: half a measurement cannot be scored.
 pub fn parse_bench(json: &str, gpu_layers: u32) -> Result<Vec<Measured>> {
+    parse_bench_at_depth(json, gpu_layers, 0)
+}
+
+/// Parses a sweep measured with `depth` tokens already in the context.
+pub fn parse_bench_at_depth(json: &str, gpu_layers: u32, depth: u32) -> Result<Vec<Measured>> {
     let rows = parse_rows(json)?;
     let mut out = Vec::new();
     for ub in UBATCH_CANDIDATES {
         let pp = rows
             .iter()
-            .find(|r| r.ubatch == ub && r.depth == 0 && r.n_prompt > 0 && r.n_gen == 0)
+            .find(|r| r.ubatch == ub && r.depth == depth && r.n_prompt > 0 && r.n_gen == 0)
             .map(|r| r.tps);
         let tg = rows
             .iter()
-            .find(|r| r.ubatch == ub && r.depth == 0 && r.n_gen > 0 && r.n_prompt == 0)
+            .find(|r| r.ubatch == ub && r.depth == depth && r.n_gen > 0 && r.n_prompt == 0)
             .map(|r| r.tps);
         if let (Some(pp), Some(tg)) = (pp, tg) {
             out.push(Measured {
@@ -161,6 +172,8 @@ pub async fn measure(
     bench: &Path,
     model: &Path,
     gpu_layers: u32,
+    context_size: u32,
+    kv_cache: crate::config::KvCacheType,
     flash_attn: bool,
     env: &[(String, String)],
 ) -> Result<Vec<Measured>> {
@@ -169,6 +182,10 @@ pub async fn measure(
         .map(u32::to_string)
         .collect::<Vec<_>>()
         .join(",");
+    // Match the requested effective window while leaving room for the measured prompt and reply.
+    // llama-bench exposes existing context through -d rather than -c.
+    let depth = bench_depth(context_size);
+    let cache = kv_cache.llama_arg();
     let args: Vec<String> = [
         "-m",
         &model.to_string_lossy(),
@@ -182,10 +199,16 @@ pub async fn measure(
         &BENCH_PROMPT_TOKENS.to_string(),
         "-n",
         &BENCH_REPLY_TOKENS.to_string(),
+        "-d",
+        &depth.to_string(),
+        "-ctk",
+        cache,
+        "-ctv",
+        cache,
         "-fa",
         if flash_attn { "1" } else { "0" },
         "-r",
-        "1",
+        "3",
         "-o",
         "json",
     ]
@@ -195,7 +218,7 @@ pub async fn measure(
     let out = runner
         .run_with_env(&bench.to_string_lossy(), &args, env, BENCH_TIMEOUT)
         .await?;
-    parse_bench(&out, gpu_layers)
+    parse_bench_at_depth(&out, gpu_layers, depth)
 }
 
 /// Prefill and decode speed with `depth` tokens already in the context.
@@ -360,6 +383,13 @@ mod tests {
     }
 
     #[test]
+    fn quick_tune_depth_reserves_the_same_prompt_and_reply_inside_the_effective_context() {
+        assert_eq!(bench_depth(65_536), 63_424);
+        assert_eq!(bench_depth(BENCH_PROMPT_TOKENS + BENCH_REPLY_TOKENS), 0);
+        assert_eq!(bench_depth(1024), 0);
+    }
+
+    #[test]
     fn the_score_is_the_time_of_a_long_prompt_plus_a_reply() {
         let s = request_seconds(1000.0, 50.0);
         assert!((s - (4.096 + 5.12)).abs() < 1e-9);
@@ -409,6 +439,8 @@ mod tests {
             Path::new("C:/rt/llama-bench.exe"),
             Path::new("C:/m.gguf"),
             41,
+            BENCH_PROMPT_TOKENS + BENCH_REPLY_TOKENS,
+            crate::config::KvCacheType::Q4_0,
             true,
             &env,
         )
@@ -416,6 +448,10 @@ mod tests {
         .unwrap();
         assert_eq!(m.len(), 2);
         assert_eq!(runner.last_env(), env);
+        let args = runner.last_args();
+        assert!(args.windows(2).any(|a| a == ["-d", "0"]));
+        assert!(args.windows(2).any(|a| a == ["-ctk", "q4_0"]));
+        assert!(args.windows(2).any(|a| a == ["-ctv", "q4_0"]));
     }
 
     #[tokio::test]
@@ -426,6 +462,8 @@ mod tests {
             Path::new("C:/rt/llama-bench.exe"),
             Path::new("m.gguf"),
             99,
+            BENCH_PROMPT_TOKENS + BENCH_REPLY_TOKENS,
+            crate::config::KvCacheType::F16,
             true,
             &[],
         )

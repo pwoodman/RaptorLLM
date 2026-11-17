@@ -1,4 +1,4 @@
-//! Which llama.cpp backend runs a model: ROCm (HIP) or Vulkan. Pure, so every rule is tested.
+//! Which llama.cpp backend runs a model. Pure, so every rule is testable.
 //!
 //! Measured on the RX 9060 XT (llama-bench b12360, flash attention on, docs/EXPERIMENTS.md):
 //! Vulkan generates faster on sparse Mixture-of-experts models that spill out of VRAM (Ornith
@@ -22,6 +22,8 @@ pub enum BackendPref {
     #[default]
     Auto,
     Rocm,
+    Cuda,
+    Sycl,
     Vulkan,
 }
 
@@ -29,9 +31,13 @@ pub enum BackendPref {
 #[derive(Debug, Clone, Copy)]
 pub struct Inputs {
     pub pref: BackendPref,
+    /// Auto's Vulkan speed rule is only measured for AMD hardware today.
+    pub amd_gpu: bool,
     /// A sparse Mixture-of-experts model larger than VRAM: its cold experts live in shared memory.
     pub spills: bool,
     pub rocm_installed: bool,
+    pub cuda_installed: bool,
+    pub sycl_installed: bool,
     pub vulkan_installed: bool,
 }
 
@@ -66,11 +72,29 @@ pub fn resolve(i: &Inputs) -> std::result::Result<Choice, String> {
                 notes: vec!["Backend: ROCm, as chosen for this model.".into()],
             })
         }
+        BackendPref::Cuda => {
+            if !i.cuda_installed {
+                return Err("You chose CUDA for this model, but no CUDA runtime is installed. Install it from Settings > Dependencies, or choose Auto.".into());
+            }
+            Ok(Choice {
+                backend: Some(Backend::Cuda),
+                notes: vec!["Backend: CUDA, as chosen for this model.".into()],
+            })
+        }
+        BackendPref::Sycl => {
+            if !i.sycl_installed {
+                return Err("You chose Intel SYCL for this model, but no SYCL runtime is installed. Install it from Settings > Dependencies, or choose Auto.".into());
+            }
+            Ok(Choice {
+                backend: Some(Backend::Sycl),
+                notes: vec!["Backend: Intel SYCL, as chosen for this model.".into()],
+            })
+        }
         BackendPref::Vulkan => {
             if !i.vulkan_installed {
                 return Err(
                     "You chose Vulkan for this model, but the Vulkan runtime is not \
-                    installed. Install it from Settings > Dependencies, or choose Auto or ROCm for \
+                    installed. Install it from Settings > Dependencies, or choose Auto or a native backend for \
                     this model."
                         .into(),
                 );
@@ -81,7 +105,7 @@ pub fn resolve(i: &Inputs) -> std::result::Result<Choice, String> {
             })
         }
         BackendPref::Auto => {
-            if i.spills && i.vulkan_installed {
+            if i.amd_gpu && i.spills && i.vulkan_installed {
                 Ok(Choice {
                     backend: Some(Backend::Vulkan),
                     notes: vec![
@@ -92,7 +116,7 @@ pub fn resolve(i: &Inputs) -> std::result::Result<Choice, String> {
                             .into(),
                     ],
                 })
-            } else if i.spills {
+            } else if i.amd_gpu && i.spills {
                 Ok(Choice {
                     backend: None,
                     notes: vec![
@@ -129,8 +153,11 @@ mod tests {
     fn inputs(pref: BackendPref, spills: bool, rocm: bool, vulkan: bool) -> Inputs {
         Inputs {
             pref,
+            amd_gpu: true,
             spills,
             rocm_installed: rocm,
+            cuda_installed: false,
+            sycl_installed: false,
             vulkan_installed: vulkan,
         }
     }

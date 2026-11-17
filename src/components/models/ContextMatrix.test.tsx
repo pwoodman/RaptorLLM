@@ -80,13 +80,13 @@ describe("ContextMatrix", () => {
     expect(await screen.findByText(/Not measured: does not fit in VRAM/)).toBeInTheDocument();
   });
 
-  it("can ask for the 128K range", async () => {
+  it("can ask for the 200K range", async () => {
     mocks.matrix.mockResolvedValue(report([row(0)]));
     render(<ContextMatrix modelId="local/m" disabled={false} />);
     await userEvent.click(screen.getByRole("button", { name: /Benchmark context lengths/ }));
-    await userEvent.click(screen.getByRole("radio", { name: /Up to 128K/ }));
+    await userEvent.click(screen.getByRole("radio", { name: /Up to 200K/ }));
     await userEvent.click(screen.getByRole("button", { name: "Start" }));
-    await waitFor(() => expect(mocks.matrix).toHaveBeenCalledWith("local/m", 131_072));
+    await waitFor(() => expect(mocks.matrix).toHaveBeenCalledWith("local/m", 200_000));
   });
 
   it("is unavailable while a model is loaded", () => {

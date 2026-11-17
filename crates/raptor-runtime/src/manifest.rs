@@ -18,6 +18,8 @@ pub enum Backend {
     Hip,
     /// NVIDIA CUDA.
     Cuda,
+    /// Intel oneAPI SYCL.
+    Sycl,
     /// Vulkan (any vendor).
     Vulkan,
     /// CPU only.
@@ -41,6 +43,7 @@ impl Backend {
         match self {
             Backend::Hip => "hip",
             Backend::Cuda => "cuda",
+            Backend::Sycl => "sycl",
             Backend::Vulkan => "vulkan",
             Backend::Cpu => "cpu",
         }
@@ -181,9 +184,18 @@ pub struct Selection {
     pub rejected: Vec<String>,
 }
 
-fn backend_rank(b: Backend) -> u8 {
+fn backend_rank(hw: &HardwareInfo, b: Backend) -> u8 {
+    let preferred = hw.gpu_of(None).map(|g| match g.vendor {
+        GpuVendor::Amd => Backend::Hip,
+        GpuVendor::Nvidia => Backend::Cuda,
+        GpuVendor::Intel => Backend::Sycl,
+        GpuVendor::Other => Backend::Vulkan,
+    });
+    if preferred == Some(b) {
+        return 4;
+    }
     match b {
-        Backend::Hip | Backend::Cuda => 3,
+        Backend::Hip | Backend::Cuda | Backend::Sycl => 3,
         Backend::Vulkan => 1,
         Backend::Cpu => 0,
     }
@@ -252,6 +264,15 @@ fn compatibility(
             let note = driver_note(nv.driver.as_ref())?;
             Ok((None, format!("{}{note}", nv.name)))
         }
+        Backend::Sycl => {
+            let intel = hw
+                .gpus
+                .iter()
+                .find(|g| g.vendor == GpuVendor::Intel)
+                .ok_or("no Intel GPU detected")?;
+            let note = driver_note(intel.driver.as_ref())?;
+            Ok((None, format!("{}{note}", intel.name)))
+        }
         Backend::Vulkan => {
             let g = hw
                 .gpus
@@ -290,7 +311,7 @@ pub fn select_runtime(hw: &HardwareInfo, manifests: &[Manifest]) -> Result<Selec
         match compatibility(hw, m) {
             Ok((arch, note)) => {
                 let cand = (
-                    backend_rank(m.backend),
+                    backend_rank(hw, m.backend),
                     version_key(&m.version),
                     m,
                     arch,

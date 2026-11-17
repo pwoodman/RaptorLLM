@@ -4,6 +4,7 @@
 //! A corrupt or unreadable file is treated as empty and never stops the app.
 
 use raptor_core::Result;
+use raptor_runtime::config::KvCacheType;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -20,10 +21,45 @@ pub struct TunedEntry {
     /// The same for the settings used without tuning, seconds.
     pub baseline_seconds: f64,
     pub measured_at: u64,
+    /// Load settings that affect the benchmark's transferability. Older entries without this
+    /// evidence are ignored by the loader and can be regenerated with Optimize speed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile: Option<TuneProfile>,
+    /// Matched streamed-request measurements. Optional for older tuning files.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub baseline_live: Option<TuneMetrics>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub best_live: Option<TuneMetrics>,
     /// The setting measured with a long context, from an opt-in deep tune. Absent in files written
     /// before deep tuning existed, and when only the quick tune was run.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub long: Option<LongTuned>,
+}
+
+/// Median metrics from repeated, warmed-up streamed requests on one launch configuration.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TuneMetrics {
+    pub gpu_layers: u32,
+    pub ubatch_size: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parallel_slots: Option<u32>,
+    pub kv_cache: KvCacheType,
+    pub flash_attn: bool,
+    pub speculative: bool,
+    pub prompt_tokens: u64,
+    pub output_tokens: u64,
+    pub ttft_ms: f64,
+    pub prompt_tps: f64,
+    pub gen_tps: f64,
+    pub samples: u32,
+    pub prompt_tokens_exact: bool,
+}
+
+/// Configuration held constant by the quick and deep tuning passes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TuneProfile {
+    pub kv_cache: KvCacheType,
+    pub flash_attn: bool,
 }
 
 /// The fastest setting with [`raptor_runtime::tune::DEEP_DEPTH`] tokens already in the context.
@@ -38,6 +74,9 @@ pub struct LongTuned {
     /// The same for the quick-tune setting at that depth (equal to `seconds` when it won).
     pub baseline_seconds: f64,
     pub depth: u32,
+    /// Cache and attention mode held constant during the deep measurement.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile: Option<TuneProfile>,
 }
 
 /// The setting a load uses for a given context window.
@@ -54,6 +93,22 @@ pub struct Setting {
 }
 
 impl TunedEntry {
+    /// Whether this profile was measured with the settings that the current load will use.
+    pub fn matches(&self, kv_cache: KvCacheType, flash_attn: bool) -> bool {
+        self.profile
+            .as_ref()
+            .is_some_and(|p| p.kv_cache == kv_cache && p.flash_attn == flash_attn)
+    }
+
+    /// Whether a deep profile matches the cache and attention settings for this context range.
+    pub fn matches_long(&self, kv_cache: KvCacheType, flash_attn: bool) -> bool {
+        self.long.as_ref().is_some_and(|l| {
+            l.profile
+                .as_ref()
+                .is_some_and(|p| p.kv_cache == kv_cache && p.flash_attn == flash_attn)
+        })
+    }
+
     /// The long-prompt setting for a window of at least its depth when a deep tune measured one,
     /// otherwise the quick-tune setting.
     pub fn setting_for(&self, ctx_size: u32) -> Setting {
@@ -155,6 +210,12 @@ mod tests {
             seconds: 5.6,
             baseline_seconds: 8.5,
             measured_at: 1,
+            profile: Some(TuneProfile {
+                kv_cache: KvCacheType::F16,
+                flash_attn: true,
+            }),
+            baseline_live: None,
+            best_live: None,
             long: None,
         }
     }
@@ -168,6 +229,10 @@ mod tests {
             seconds: 15.4,
             baseline_seconds: 18.0,
             depth: 16_384,
+            profile: Some(TuneProfile {
+                kv_cache: KvCacheType::F16,
+                flash_attn: true,
+            }),
         }
     }
 
@@ -181,8 +246,11 @@ mod tests {
         )
         .unwrap();
         let got = TunedStore::open(&path).get("k").unwrap();
-        assert_eq!(got, entry(256));
+        let mut expected = entry(256);
+        expected.profile = None;
+        assert_eq!(got, expected);
         assert!(got.long.is_none());
+        assert!(!got.matches(KvCacheType::F16, true));
         let saved = serde_json::to_string(&got).unwrap();
         assert!(!saved.contains("long"), "{saved}");
     }
@@ -212,6 +280,24 @@ mod tests {
         let s = entry(256).setting_for(131_072);
         assert!(!s.long);
         assert_eq!(s.ubatch_size, 256);
+    }
+
+    #[test]
+    fn profiles_match_the_cache_and_attention_mode_of_their_context_range() {
+        let mut e = entry(256);
+        e.long = Some(long(512));
+        assert!(e.matches(KvCacheType::F16, true));
+        assert!(!e.matches(KvCacheType::Q8_0, true));
+        assert!(e.matches_long(KvCacheType::F16, true));
+        assert!(!e.matches_long(KvCacheType::Q8_0, true));
+        if let Some(deep) = e.long.as_mut() {
+            deep.profile = Some(TuneProfile {
+                kv_cache: KvCacheType::Q8_0,
+                flash_attn: true,
+            });
+        }
+        assert!(e.matches_long(KvCacheType::Q8_0, true));
+        assert!(!e.matches_long(KvCacheType::F16, true));
     }
 
     #[test]

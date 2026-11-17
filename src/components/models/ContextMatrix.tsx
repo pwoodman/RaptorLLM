@@ -5,7 +5,7 @@ import { messageOf } from "../../lib/errors";
 import { ConfirmDialog } from "../ConfirmDialog";
 import { Notice } from "../Notice";
 
-/** "4K", "32K", "128K", "baseline" for 0. */
+/** "4K", "32K", "128K", "192K", "baseline" for 0. */
 export function depthLabel(depth: number): string {
   return depth === 0 ? "Empty" : `${Math.round(depth / 1024)}K`;
 }
@@ -29,7 +29,7 @@ const CACHE_LABEL: Record<string, string> = { f16: "16-bit", q8_0: "8-bit", q4_0
 
 /**
  * Measures how the model behaves as the context grows: prefill and decode speed, the wait for a
- * 512-token turn, and GPU memory, at 0 to 128K tokens, each with the cheapest cache type that fits.
+ * 512-token turn, and GPU memory, at 0 to 192K tokens, each with the cheapest cache type that fits.
  * It runs a benchmark on the GPU for minutes (a 128K run can take 20+), so it asks first and is
  * offered only while no model is loaded. The numbers are plain decoding, without speculation.
  */
@@ -79,7 +79,7 @@ export function ContextMatrix({ modelId, disabled }: { modelId: string; disabled
     setRunning(true);
     setError(null);
     try {
-      setReport(await api.models.contextMatrix(modelId, deep ? 131_072 : 32_768));
+      setReport(await api.models.contextMatrix(modelId, deep ? 200_000 : 32_768));
     } catch (e) {
       setError(messageOf(e));
     } finally {
@@ -196,8 +196,8 @@ export function ContextMatrix({ modelId, disabled }: { modelId: string; disabled
         <label className="radio">
           <input type="radio" name="matrix-depth" checked={deep} onChange={() => setDeep(true)} />
           <span>
-            <strong>Up to 128K</strong>
-            <span className="muted small block">Can take 20 minutes or more: every length first reads its whole context.</span>
+            <strong>Up to 200K</strong>
+            <span className="muted small block">Measures through 192K plus turn reserve; can take 20 minutes or more because each length reads its whole context.</span>
           </span>
         </label>
       </ConfirmDialog>

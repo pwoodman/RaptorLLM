@@ -17,10 +17,12 @@ use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-pub const SETTINGS_VERSION: u32 = 2;
-pub const DEFAULT_CONTEXT_TARGET: u32 = 8192;
-pub const MIN_CONTEXT_TARGET: u32 = 512;
-pub const MAX_CONTEXT_TARGET: u32 = 131_072;
+pub const SETTINGS_VERSION: u32 = 3;
+/// Product target for coding agents; the effective model context may be lower when hardware or
+/// model limits cannot sustain it, and load reports must explain that constraint.
+pub const DEFAULT_CONTEXT_TARGET: u32 = 65_536;
+pub const MIN_CONTEXT_TARGET: u32 = 65_536;
+pub const MAX_CONTEXT_TARGET: u32 = 200_000;
 pub const MAX_EMBEDDING_MODEL_ID_BYTES: usize = 512;
 
 /// The gateway API key as persisted: the key id, creation time, and the digest record.
@@ -325,13 +327,29 @@ pub fn load(path: &Path) -> Loaded {
 /// optional note for the UI (set when a migration happened).
 fn parse_settings(bytes: &[u8]) -> std::result::Result<(Settings, Option<String>), String> {
     let mut root: Value = serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
-    let note = migrate_legacy_key(&mut root)?;
+    let mut notes = Vec::new();
+    if let Some(note) = migrate_legacy_key(&mut root)? {
+        notes.push(note);
+    }
     let mut settings: Settings = serde_json::from_value(root).map_err(|e| e.to_string())?;
-    if note.is_some() {
+    if settings.version < SETTINGS_VERSION {
+        notes.push(format!(
+            "settings were migrated to version {SETTINGS_VERSION}"
+        ));
+    }
+    if !(MIN_CONTEXT_TARGET..=MAX_CONTEXT_TARGET).contains(&settings.context_target) {
+        let previous = settings.context_target;
+        settings.context_target = previous.clamp(MIN_CONTEXT_TARGET, MAX_CONTEXT_TARGET);
+        notes.push(format!(
+            "the context target was updated from {previous} to {} tokens to match the supported {}-{} token range",
+            settings.context_target, MIN_CONTEXT_TARGET, MAX_CONTEXT_TARGET
+        ));
+    }
+    if !notes.is_empty() {
         settings.version = SETTINGS_VERSION;
     }
     settings.validate().map_err(|e| e.to_string())?;
-    Ok((settings, note))
+    Ok((settings, (!notes.is_empty()).then(|| notes.join("; "))))
 }
 
 fn backup_path(path: &Path) -> PathBuf {
@@ -450,7 +468,7 @@ mod tests {
         let p = path_in(&dir);
         let s = Settings {
             gateway_port: 9001,
-            context_target: 16_384,
+            context_target: 65_536,
             workspaces: vec![dir.path().join("repo")],
             pinned_runtime: Some(PinnedRuntime {
                 id: "llama-hip-win".into(),
@@ -531,6 +549,27 @@ mod tests {
             ..Settings::default()
         };
         assert!(save(&p, &small_ctx).is_err());
+    }
+
+    #[test]
+    fn old_context_targets_are_migrated_into_the_new_supported_range() {
+        let old_small = parse_settings(br#"{"version":2,"context_target":8192}"#).unwrap();
+        assert_eq!(old_small.0.context_target, MIN_CONTEXT_TARGET);
+        assert!(old_small.1.as_deref().is_some_and(|n| n.contains("8192")));
+
+        let old_large = parse_settings(br#"{"version":2,"context_target":262144}"#).unwrap();
+        assert_eq!(old_large.0.context_target, MAX_CONTEXT_TARGET);
+        assert!(old_large.1.as_deref().is_some_and(|n| n.contains("262144")));
+        assert_eq!(Settings::default().context_target, 65_536);
+    }
+
+    #[test]
+    fn context_target_boundary_is_200000_tokens() {
+        let mut settings = Settings::default();
+        settings.context_target = 200_000;
+        assert!(settings.validate().is_ok());
+        settings.context_target += 1;
+        assert!(settings.validate().is_err());
     }
 
     #[test]

@@ -626,6 +626,7 @@ fn gpu_vendor_for(backend: Backend) -> Option<GpuVendor> {
     match backend {
         Backend::Hip => Some(GpuVendor::Amd),
         Backend::Cuda => Some(GpuVendor::Nvidia),
+        Backend::Sycl => Some(GpuVendor::Intel),
         Backend::Vulkan => None,
         Backend::Cpu => None,
     }

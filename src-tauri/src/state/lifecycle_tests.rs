@@ -366,6 +366,12 @@ async fn save_tuning(h: &Harness, gpu_layers: u32, ubatch: u32) {
                 seconds: 6.0,
                 baseline_seconds: 9.0,
                 measured_at: 1,
+                profile: Some(crate::tuned::TuneProfile {
+                    kv_cache: raptor_runtime::config::KvCacheType::F16,
+                    flash_attn: true,
+                }),
+                baseline_live: None,
+                best_live: None,
                 long: None,
             },
         )
@@ -389,6 +395,12 @@ async fn save_deep_tuning(h: &Harness, short: (u32, u32), long: (u32, u32)) {
                 seconds: 6.0,
                 baseline_seconds: 9.0,
                 measured_at: 1,
+                profile: Some(crate::tuned::TuneProfile {
+                    kv_cache: raptor_runtime::config::KvCacheType::F16,
+                    flash_attn: true,
+                }),
+                baseline_live: None,
+                best_live: None,
                 long: Some(crate::tuned::LongTuned {
                     gpu_layers: long.0,
                     ubatch_size: long.1,
@@ -397,6 +409,10 @@ async fn save_deep_tuning(h: &Harness, short: (u32, u32), long: (u32, u32)) {
                     seconds: 15.0,
                     baseline_seconds: 18.0,
                     depth: raptor_runtime::tune::DEEP_DEPTH,
+                    profile: Some(crate::tuned::TuneProfile {
+                        kv_cache: raptor_runtime::config::KvCacheType::Q8_0,
+                        flash_attn: true,
+                    }),
                 }),
             },
         )
@@ -1154,7 +1170,7 @@ async fn the_backend_view_reports_what_a_load_would_use_and_why_a_choice_fails()
     let h = harness(vec![], 0, true).await;
     let view = h.state.backend_view(&h.model_id).await.unwrap();
     assert_eq!(view.preference, BackendPref::Auto);
-    assert_eq!(view.effective, "default");
+    assert_eq!(view.effective, "rocm");
     assert!(view.rocm_installed && !view.vulkan_installed && !view.spills);
 
     h.state

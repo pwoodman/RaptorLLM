@@ -20,6 +20,8 @@ use std::path::Path;
 pub const STEP: u32 = 1024;
 /// The smallest context worth offering.
 pub const FLOOR: u32 = 4096;
+/// Hard product limit for a requested context window. Model and memory fit can be lower.
+pub const MAX_CONTEXT_TOKENS: u32 = 200_000;
 /// Extra shrink applied to an over-budget confirmation, to converge in few probes.
 const SHRINK_MARGIN: f64 = 1.15;
 /// Probes allowed after the prediction.
@@ -197,15 +199,16 @@ pub async fn find(
     let mut base = base.clone();
     base.kv_cache = kv;
     base.flash_attn = true;
-    let low = FLOOR.min(cap).max(2048);
-    let high = cap.min(131_072).max(low + STEP);
+    let fit_cap = cap.min(MAX_CONTEXT_TOKENS);
+    let low = FLOOR.min(fit_cap).max(2048);
+    let high = fit_cap.max(low + STEP).min(MAX_CONTEXT_TOKENS);
     let p1 = project(runner, &tool, &base, low, slots, env).await?;
     let p2 = project(runner, &tool, &base, high, slots, env).await?;
     let points = (
         (low, overhead.total(p1.total_mib(), low)),
         (high, overhead.total(p2.total_mib(), high)),
     );
-    let Some(mut ctx) = extrapolate(points.0, points.1, budget_mib, cap) else {
+    let Some(mut ctx) = extrapolate(points.0, points.1, budget_mib, fit_cap) else {
         return Err(RaptorError::Runtime(format!(
             "not even {low} tokens fit in {budget_mib} MiB with a {} KV cache",
             kv.llama_arg()
@@ -222,7 +225,7 @@ pub async fn find(
                 ctx,
                 projected_mib: used,
                 budget_mib,
-                capped_by_model: ctx >= round_down(u64::from(cap)),
+                capped_by_model: ctx >= round_down(u64::from(fit_cap)),
             });
         }
         ctx = shrink(ctx, used, budget_mib, s);

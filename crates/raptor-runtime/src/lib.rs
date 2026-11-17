@@ -543,6 +543,8 @@ impl RuntimeEngine {
         &self,
         model: &Path,
         gpu_layers: u32,
+        context_size: u32,
+        kv_cache: crate::config::KvCacheType,
         flash_attn: bool,
     ) -> Result<Vec<crate::tune::Measured>> {
         self.refuse_while_running("tune a model")?;
@@ -561,7 +563,17 @@ impl RuntimeEngine {
             Vec::new()
         };
         let env = launch_env(&sdk_bin_dirs, std::env::var("PATH").ok().as_deref())?;
-        crate::tune::measure(&*self.runner, &bench, model, gpu_layers, flash_attn, &env).await
+        crate::tune::measure(
+            &*self.runner,
+            &bench,
+            model,
+            gpu_layers,
+            context_size,
+            kv_cache,
+            flash_attn,
+            &env,
+        )
+        .await
     }
 
     fn refuse_while_running(&self, action: &str) -> Result<()> {

@@ -45,6 +45,8 @@ pub fn parse_server_log(text: &str) -> LogFacts {
             set_backend(&mut f, Backend::Hip);
         } else if line.contains("CUDA devices") {
             set_backend(&mut f, Backend::Cuda);
+        } else if line.contains("SYCL devices") {
+            set_backend(&mut f, Backend::Sycl);
         } else if line.contains("Vulkan devices") {
             set_backend(&mut f, Backend::Vulkan);
         }
@@ -56,6 +58,9 @@ pub fn parse_server_log(text: &str) -> LogFacts {
                 set_backend(&mut f, Backend::Cuda);
             }
             f.devices.push(dev.0);
+        } else if let Some((name, backend)) = parse_sycl_device(trimmed) {
+            set_backend(&mut f, backend);
+            f.devices.push(name);
         } else if let Some(name) = parse_vulkan_device(trimmed) {
             set_backend(&mut f, Backend::Vulkan);
             f.devices.push(name);
@@ -148,6 +153,13 @@ fn parse_hip_or_cuda_device(trimmed: &str) -> Option<(String, Backend)> {
     None
 }
 
+/// `llama.cpp` SYCL startup names its initialized device `SYCL0: Intel Arc ...`.
+fn parse_sycl_device(trimmed: &str) -> Option<(String, Backend)> {
+    let (id, name) = trimmed.split_once(": ")?;
+    (id.starts_with("SYCL") && id[4..].bytes().all(|b| b.is_ascii_digit()))
+        .then(|| (name.to_string(), Backend::Sycl))
+}
+
 /// "ggml_vulkan: 0 = AMD Radeon RX 9060 XT (RADV GFX1200) (radv) | uma: 0 | ..."
 fn parse_vulkan_device(trimmed: &str) -> Option<String> {
     let rest = trimmed.strip_prefix("ggml_vulkan: ")?;
@@ -206,6 +218,8 @@ fn backend_from_buffer_name(name: &str) -> Option<Backend> {
         Some(Backend::Hip)
     } else if name.starts_with("CUDA") {
         Some(Backend::Cuda)
+    } else if name.starts_with("SYCL") {
+        Some(Backend::Sycl)
     } else if name.starts_with("Vulkan") {
         Some(Backend::Vulkan)
     } else {

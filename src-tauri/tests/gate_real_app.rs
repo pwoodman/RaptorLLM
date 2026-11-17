@@ -9,22 +9,78 @@
 //! Environment:
 //!   RAPTOR_TEST_RUNTIME_DIR  directory that holds `llama-server.exe` (an extracted llama.cpp build).
 //!   RAPTOR_TEST_MODEL        a `.gguf` file. It is referenced in place: never copied, moved or changed.
+//!   RAPTOR_TEST_GPU_NAME, RAPTOR_TEST_GPU_VRAM_MIB and RAPTOR_TEST_GPU_FREE_MIB (optional together)
+//!                             seed real device facts when Windows WMI/CIM is unavailable. Source
+//!                             these from `llama-server --list-devices`; device/load/offload checks
+//!                             still run against the real runtime. RAM defaults to 64/52 GiB and can
+//!                             be overridden with RAPTOR_TEST_RAM_GIB / RAPTOR_TEST_RAM_FREE_GIB.
 //!
 //! Run: `cargo test -p raptor-llm --test gate_real_app -- --ignored --nocapture`
 
 #![cfg(windows)]
 
-use raptor_core::{ChatMessage, DataDirs, Role};
+use raptor_core::{ChatMessage, DataDirs, Result as CoreResult, Role};
 use raptor_gateway::{Completion, Endpoint, Upstream};
 use raptor_lib::commands::chat::{begin_chat, ChatEvent, ChatOptions};
 use raptor_lib::settings::{Settings, SettingsStore};
 use raptor_lib::state::{model_meta, AppState, ShellDeps};
+use raptor_runtime::hardware::{CpuInfo, GpuInfo, GpuVendor, HardwareInfo, HardwareProbe, Os};
 use raptor_runtime::manifest::Backend;
 use std::path::{Path, PathBuf};
 use std::sync::{mpsc, Arc};
 use std::time::{Duration, Instant};
 
 const MIB: u64 = 1024 * 1024;
+
+struct FixedProbe(HardwareInfo);
+
+#[async_trait::async_trait]
+impl HardwareProbe for FixedProbe {
+    async fn probe(&self) -> CoreResult<HardwareInfo> {
+        Ok(self.0.clone())
+    }
+}
+
+fn manual_hardware() -> Option<HardwareInfo> {
+    let (name, total_mib, free_mib) = (
+        std::env::var("RAPTOR_TEST_GPU_NAME").ok()?,
+        std::env::var("RAPTOR_TEST_GPU_VRAM_MIB")
+            .ok()?
+            .parse::<u64>()
+            .ok()?,
+        std::env::var("RAPTOR_TEST_GPU_FREE_MIB")
+            .ok()?
+            .parse::<u64>()
+            .ok()?,
+    );
+    let ram_gib = std::env::var("RAPTOR_TEST_RAM_GIB")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(64);
+    let ram_free_gib = std::env::var("RAPTOR_TEST_RAM_FREE_GIB")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(ram_gib.saturating_sub(12));
+    Some(HardwareInfo {
+        os: Os::Windows,
+        cpu: CpuInfo {
+            brand: "Windows host (manual real-hardware gate facts)".into(),
+            cores: 8,
+            threads: std::thread::available_parallelism().map_or(1, |n| n.get() as u32),
+            features: Vec::new(),
+        },
+        ram_total: ram_gib * 1024 * 1024 * 1024,
+        ram_avail: ram_free_gib * 1024 * 1024 * 1024,
+        gpus: vec![GpuInfo {
+            vendor: GpuVendor::Amd,
+            name,
+            vram_total: total_mib * MIB,
+            vram_free: Some(free_mib * MIB),
+            arch: std::env::var("RAPTOR_TEST_GPU_ARCH").ok(),
+            driver: std::env::var("RAPTOR_TEST_GPU_DRIVER").ok(),
+        }],
+    })
+}
 
 fn required_path(var: &str) -> PathBuf {
     match std::env::var(var) {
@@ -258,6 +314,45 @@ async fn exercise(state: &AppState, model: &Path, bin: &Path) -> Result<(), Stri
     if history.is_empty() {
         return Err("no performance record was saved".into());
     }
+
+    // Run the app's own short optimizer and its matched streamed comparison after unloading.
+    state
+        .unload_model()
+        .await
+        .map_err(|e| format!("unload before tune: {e}"))?;
+    let tuned = state
+        .tune_model(&entry.id, false)
+        .await
+        .map_err(|e| format!("Raptor speed tune: {e}"))?;
+    let show = |label: &str, m: &Option<raptor_lib::tuned::TuneMetrics>| {
+        if let Some(m) = m {
+            println!(
+                "{label}: gen={:.2} tok/s prompt={:.2} tok/s ttft={:.1} ms samples={} exact_prompt_tokens={} config=ngl:{},ubatch:{},cache:{:?},flash_attn:{},speculative:{}",
+                m.gen_tps,
+                m.prompt_tps,
+                m.ttft_ms,
+                m.samples,
+                m.prompt_tokens_exact,
+                m.gpu_layers,
+                m.ubatch_size,
+                m.kv_cache,
+                m.flash_attn,
+                m.speculative,
+            );
+        } else {
+            println!("{label}: unavailable (see tune errors below)");
+        }
+    };
+    show("base", &tuned.baseline_live);
+    show("raptor optimized", &tuned.best_live);
+    println!(
+        "tune summary: estimated_improvement={:.1}% context={} runtime={} backend={:?} errors={:?}",
+        tuned.improvement_percent,
+        tuned.context_size,
+        tuned.runtime_id,
+        tuned.backend,
+        tuned.errors,
+    );
     Ok(())
 }
 
@@ -281,7 +376,12 @@ async fn shell_path_loads_benchmarks_chats_and_unloads_on_real_hardware() {
         dirs.config().join("settings.json"),
         Settings::default(),
     ));
-    let deps = ShellDeps::production(&dirs).expect("production deps");
+    let mut deps = ShellDeps::production(&dirs).expect("production deps");
+    if let Some(hw) = manual_hardware() {
+        // The same physical device was confirmed by `llama-server --list-devices`.
+        // Only replace WMI hardware discovery; runtime/device verification stays real.
+        deps.engine.probe = Arc::new(FixedProbe(hw));
+    }
     let state = AppState::from_parts(dirs.clone(), settings, vec![], deps).expect("app state");
     state
         .runtime

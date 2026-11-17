@@ -22,10 +22,10 @@ function view(overrides: Partial<SettingsView> = {}): SettingsView {
     gateway_port: 8790,
     lan_enabled: false,
     api_key: null,
-    context_target: 8192,
+    context_target: 65536,
     workspaces: [],
-    min_context_target: 512,
-    max_context_target: 131072,
+    min_context_target: 65536,
+    max_context_target: 200000,
     notes: [],
     ...overrides,
   };

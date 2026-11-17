@@ -5,7 +5,7 @@
 //! unstable run never replaces a stable one; `best_known` only ever returns a
 //! stable record.
 
-use crate::config::{KvCacheType, LaunchConfig};
+use crate::config::{KvCacheType, LaunchConfig, SpecMode};
 use crate::hardware::HardwareInfo;
 use crate::hash::sha256_hex;
 use raptor_core::{RaptorError, Result};
@@ -35,6 +35,12 @@ pub struct ConfigSnapshot {
     pub threads: u32,
     pub flash_attn: bool,
     pub kv_cache: KvCacheType,
+    /// Speculative decoding mode; absent in legacy records and when disabled.
+    #[serde(default)]
+    pub speculative: Option<SpecMode>,
+    /// Whether the configuration uses a separate draft model.
+    #[serde(default)]
+    pub uses_draft_model: bool,
 }
 
 impl From<&LaunchConfig> for ConfigSnapshot {
@@ -47,6 +53,8 @@ impl From<&LaunchConfig> for ConfigSnapshot {
             threads: c.threads,
             flash_attn: c.flash_attn,
             kv_cache: c.kv_cache,
+            speculative: c.speculative,
+            uses_draft_model: c.draft_model.is_some(),
         }
     }
 }
@@ -58,6 +66,15 @@ pub struct BenchRecord {
     pub model_hash: String,
     pub runtime_id: String,
     pub runtime_version: String,
+    /// Human-readable adapter behind the machine fingerprint.
+    #[serde(default)]
+    pub gpu_name: Option<String>,
+    /// GPU driver version at measurement time, when Windows reports one.
+    #[serde(default)]
+    pub gpu_driver: Option<String>,
+    /// GGUF quantization, if known by the model catalog.
+    #[serde(default)]
+    pub quant_label: Option<String>,
     pub config: ConfigSnapshot,
     pub ttft_ms: f64,
     pub prompt_tps: f64,
@@ -152,7 +169,7 @@ pub fn machine_fingerprint(hw: &HardwareInfo) -> String {
     let gpus: Vec<String> = hw
         .gpus
         .iter()
-        .map(|g| format!("{}|{}|{:?}", g.name, g.vram_total, g.arch))
+        .map(|g| format!("{}|{}|{:?}|{:?}", g.name, g.vram_total, g.arch, g.driver))
         .collect();
     let canonical = format!(
         "os={:?};cpu={};cores={};ram={};gpus={}",
@@ -331,6 +348,8 @@ mod tests {
             threads: 8,
             flash_attn: true,
             kv_cache: KvCacheType::F16,
+            speculative: None,
+            uses_draft_model: false,
         }
     }
 
@@ -340,6 +359,9 @@ mod tests {
             model_hash: "h1".into(),
             runtime_id: "llama-hip-win".into(),
             runtime_version: "b7100".into(),
+            gpu_name: Some("Radeon RX 9060 XT".into()),
+            gpu_driver: Some("32.0.12019.1024".into()),
+            quant_label: Some("Q4_K_M".into()),
             config: cfg(ctx),
             ttft_ms: 300.0,
             prompt_tps: 900.0,
@@ -536,6 +558,9 @@ mod tests {
         let mut other_gpu = hw.clone();
         other_gpu.gpus[0].name = "AMD Radeon RX 7900 XTX".into();
         assert_ne!(machine_fingerprint(&hw), machine_fingerprint(&other_gpu));
+        let mut other_driver = hw.clone();
+        other_driver.gpus[0].driver = Some("25.10.1".into());
+        assert_ne!(machine_fingerprint(&hw), machine_fingerprint(&other_driver));
     }
 
     #[test]

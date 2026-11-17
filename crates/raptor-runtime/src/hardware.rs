@@ -126,10 +126,15 @@ pub fn amd_arch_from_name(name: &str) -> Option<&'static str> {
         ("RX 7800", "gfx1101"), // Navi 32
         ("RX 7700", "gfx1101"), // Navi 32
         ("RX 7600", "gfx1102"), // Navi 33
+        ("RX 6950", "gfx1030"), // Navi 21 refresh
         ("RX 6900", "gfx1030"), // Navi 21
         ("RX 6800", "gfx1030"), // Navi 21
+        ("RX 6750", "gfx1031"), // Navi 22 refresh
         ("RX 6700", "gfx1031"), // Navi 22
+        ("RX 6650", "gfx1032"), // Navi 23 refresh
         ("RX 6600", "gfx1032"), // Navi 23
+        ("RX 6500", "gfx1034"), // Navi 24
+        ("RX 6400", "gfx1034"), // Navi 24
     ];
     let upper = name.to_ascii_uppercase();
     TABLE
