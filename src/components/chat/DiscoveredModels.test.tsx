@@ -1,69 +1,43 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
-const mocks = vi.hoisted(() => ({ discover: vi.fn(), importModel: vi.fn(), importProgress: vi.fn() }));
-
-vi.mock("../../api", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../../api")>();
-  return {
-    ...actual,
-    api: {
-      ...actual.api,
-      models: { ...actual.api.models, discover: mocks.discover, importProgress: mocks.importProgress },
-    },
-  };
-});
-vi.mock("../../state/library", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../../state/library")>();
-  return { ...actual, importModel: mocks.importModel };
-});
-
+const mocks = vi.hoisted(() => ({ sync: vi.fn() }));
+vi.mock("../../state/localModels", async (original) => ({
+  ...await original<typeof import("../../state/localModels")>(), syncLocalModels: mocks.sync,
+}));
+import { localModelsStore } from "../../state/localModels";
 import { baseName, DiscoveredModels } from "./DiscoveredModels";
 
-const found = [
-  {
-    path: "C:\\Users\\me\\.lmstudio\\models",
-    source: "LM Studio",
-    items: [
-      { path: "C:\\Users\\me\\.lmstudio\\models\\pub\\repo\\a.gguf", size_bytes: 2_000_000_000, status: { status: "new" } },
-    ],
-  },
-];
+beforeEach(() => {
+  mocks.sync.mockReset();
+  localModelsStore.set({ phase: "idle", current: null, done: 0, total: 0, added: 0, errors: [] });
+});
 
 describe("DiscoveredModels", () => {
-  beforeEach(() => {
-    mocks.discover.mockReset();
-    mocks.importModel.mockReset();
-    mocks.importProgress.mockResolvedValue({ done: 0, total: 0 });
-  });
-
-  it("takes the file name from either kind of path", () => {
+  it("takes file names from either kind of path", () => {
     expect(baseName("C:\\a\\b\\m.gguf")).toBe("m.gguf");
     expect(baseName("/a/b/m.gguf")).toBe("m.gguf");
   });
 
-  it("offers models from other apps and adds one by reference", async () => {
-    mocks.discover.mockResolvedValueOnce(found).mockResolvedValue([]);
-    mocks.importModel.mockResolvedValue({});
+  it("starts automatic discovery without presenting Add buttons", () => {
+    localModelsStore.set({ phase: "indexing", current: "C:/models/a.gguf", done: 0, total: 13 });
     render(<DiscoveredModels />);
-
-    expect(await screen.findByText("a.gguf")).toBeInTheDocument();
-    expect(screen.getByText(/LM Studio/)).toBeInTheDocument();
-    await userEvent.click(screen.getByRole("button", { name: /Add/ }));
-
-    await waitFor(() =>
-      expect(mocks.importModel).toHaveBeenCalledWith(
-        "C:\\Users\\me\\.lmstudio\\models\\pub\\repo\\a.gguf",
-        "reference",
-      ),
-    );
+    expect(mocks.sync).toHaveBeenCalled();
+    expect(screen.getByText(/0 of 13 checked/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Add/ })).not.toBeInTheDocument();
+    expect(screen.getByText("a.gguf")).toBeInTheDocument();
   });
 
-  it("shows nothing when no other models are found", async () => {
-    mocks.discover.mockResolvedValue([]);
+  it("shows nothing when no new models were found", () => {
     const { container } = render(<DiscoveredModels />);
-    await waitFor(() => expect(mocks.discover).toHaveBeenCalled());
     expect(container).toBeEmptyDOMElement();
+  });
+
+  it("offers a retry when automatic registration fails", async () => {
+    localModelsStore.set({ errors: ["a.gguf: file unavailable"] });
+    render(<DiscoveredModels />);
+    await userEvent.click(screen.getByRole("button", { name: "Check folders again" }));
+    expect(mocks.sync).toHaveBeenLastCalledWith(true);
   });
 });

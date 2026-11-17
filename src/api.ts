@@ -928,6 +928,7 @@ export const api = {
     storage: () => call<StorageUsage>("models_storage"),
     delete: (id: string) => call<void>("models_delete", { id }),
     import: (path: string, mode: ImportMode) => call<ModelEntry>("models_import", { path, mode }),
+    importDiscovered: (path: string) => call<ModelEntry>("models_import_discovered", { path }),
     /** Bytes hashed so far by the import running now, and the bytes it has to hash. */
     importProgress: () => call<{ done: number; total: number }>("models_import_progress"),
     scanFolder: (dir: string) => call<ScanItem[]>("models_scan_folder", { dir }),

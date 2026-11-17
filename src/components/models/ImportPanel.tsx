@@ -1,9 +1,10 @@
 import { useEffect, useState } from "react";
-import { FolderSearch, Plus } from "lucide-react";
+import { FolderSearch } from "lucide-react";
 import { api, type ScanItem } from "../../api";
 import { messageOf } from "../../lib/errors";
 import { formatBytes } from "../../lib/format";
 import { importModel } from "../../state/library";
+import { syncLocalModels } from "../../state/localModels";
 import { ErrorState } from "../AsyncState";
 import { Notice } from "../Notice";
 
@@ -62,7 +63,11 @@ export function ImportPanel() {
     setError(null);
     try {
       const selected = await api.dialog.pickFolder();
-      if (selected) await scanDir(selected);
+      if (selected) {
+        await scanDir(selected);
+        await syncLocalModels(true);
+        await scanDir(selected);
+      }
     } catch (e) {
       setError(e);
     }
@@ -97,7 +102,6 @@ export function ImportPanel() {
     }
   }
 
-  const fresh = (scan ?? []).filter((i) => i.status.status === "new");
   const known = (scan ?? []).filter((i) => i.status.status === "already_in_library").length;
 
   return (
@@ -128,19 +132,7 @@ export function ImportPanel() {
             Found {scan.length} {scan.length === 1 ? "file" : "files"}
             {known > 0 ? `, ${known} already added` : ""}.
           </p>
-          {fresh.length > 0 && (
-            <div>
-              <button
-                type="button"
-                className="btn btn-primary"
-                disabled={busy}
-                onClick={() => void addFiles(fresh.map((i) => i.path))}
-              >
-                <Plus size={14} aria-hidden="true" />{" "}
-                {adding !== null ? "Adding..." : `Add ${fresh.length} ${fresh.length === 1 ? "model" : "models"}`}
-              </button>
-            </div>
-          )}
+          <p className="small muted">New models are verified and added automatically. No separate Add step is needed.</p>
           <details>
             <summary className="small muted">Show files</summary>
             <ul className="plain-list">

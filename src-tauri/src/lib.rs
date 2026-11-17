@@ -167,6 +167,7 @@ pub fn run() {
             commands::models::models_storage,
             commands::models::models_delete,
             commands::models::models_import,
+            commands::models::models_import_discovered,
             commands::models::models_import_progress,
             commands::models::models_scan_folder,
             commands::models::models_discover,

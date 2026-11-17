@@ -110,6 +110,19 @@ pub async fn models_import_progress(state: State<'_, AppState>) -> Result<Import
     Ok(ImportProgress { done, total })
 }
 
+/// Registers an automatically discovered model in place, without copying or moving its files.
+#[tauri::command]
+pub async fn models_import_discovered(
+    state: State<'_, AppState>,
+    path: String,
+) -> Result<ModelEntry> {
+    let src = parse_abs_file(&path)?;
+    let models = state.models.clone();
+    tokio::task::spawn_blocking(move || models.library().import_discovered(&src))
+        .await
+        .map_err(|e| RaptorError::Internal(format!("automatic model indexing failed: {e}")))?
+}
+
 /// Bytes hashed so far by an import, out of the bytes it has to hash.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct ImportProgress {
@@ -148,7 +161,7 @@ pub struct DiscoveredFolder {
 
 /// Looks in the usual folders of LM Studio, Jan, GPT4All, llama.cpp and the Hugging Face cache,
 /// plus folders scanned before, for GGUF models that are not in the library. Reads headers only;
-/// nothing is copied or hashed. Adding one is `models_import` with mode `reference`.
+/// nothing is copied or hashed. The app indexes new models in the background after discovery.
 #[tauri::command]
 pub async fn models_discover(state: State<'_, AppState>) -> Result<Vec<DiscoveredFolder>> {
     let home = dirs::home_dir();
@@ -195,6 +208,7 @@ pub async fn models_discover(state: State<'_, AppState>) -> Result<Vec<Discovere
                 .into_iter()
                 .filter(|i| {
                     matches!(i.status, raptor_models::library::ScanStatus::New)
+                        && i.architecture.is_some()
                         && !i
                             .path
                             .file_name()

@@ -425,24 +425,61 @@ impl Library {
     /// Indexes a GGUF file (or every shard of a split model) where it is, without copying.
     /// Deleting the entry leaves the files.
     pub fn import_reference(&self, src: &Path) -> Result<ModelEntry> {
+        self.reference_in_place(src, false)
+    }
+
+    /// Automatically indexes a discovered file without moving it, even in the library folder.
+    /// Repeated discovery and identical copies reuse the existing entry; same-name models with
+    /// different content receive distinct ids instead of requiring a manual rename.
+    pub fn import_discovered(&self, src: &Path) -> Result<ModelEntry> {
+        self.reference_in_place(src, true)
+    }
+
+    fn reference_in_place(&self, src: &Path, discovered: bool) -> Result<ModelEntry> {
         let _scope = ProgressScope::start(&self.import_progress);
-        self.refuse_known_name(src)?;
+        if !discovered {
+            self.refuse_known_name(src)?;
+        }
         // `absolute` (unlike `canonicalize`) adds no Windows `\\?\` prefix, so stored paths stay readable.
         let absolute = std::path::absolute(src)?;
-        if absolute.starts_with(&self.models_dir) {
+        if !discovered && absolute.starts_with(&self.models_dir) {
             return Err(RaptorError::InvalidInput(
                 "file is already inside the model library".into(),
             ));
         }
+        if discovered {
+            let state = self.lock()?;
+            if let Some(id) = referenced_by_path(&state.entries, &absolute) {
+                if let Some(entry) = state
+                    .entries
+                    .iter()
+                    .find(|e| e.id == id && self.installed(&state, e))
+                {
+                    return Ok(entry.clone());
+                }
+            }
+        }
         let files = inspect_import(&absolute)?;
-        if files.iter().any(|f| f.path.starts_with(&self.models_dir)) {
+        if !discovered && files.iter().any(|f| f.path.starts_with(&self.models_dir)) {
             return Err(RaptorError::InvalidInput(
                 "file is already inside the model library".into(),
             ));
         }
         let mut state = self.lock()?;
-        let id = format!("{LOCAL_PUBLISHER}/{}", files[0].name);
+        let mut id = format!("{LOCAL_PUBLISHER}/{}", files[0].name);
         let identity = identity_of(&files);
+        if discovered {
+            if let Some(entry) = state
+                .entries
+                .iter()
+                .find(|e| e.sha256 == identity && self.installed(&state, e))
+            {
+                return Ok(entry.clone());
+            }
+            if state.entries.iter().any(|e| e.id == id) {
+                id = format!("{LOCAL_PUBLISHER}/{identity}");
+            }
+        }
         check_free(&state.entries, &id, &identity)?;
         let locations: Vec<String> = files.iter().map(|f| f.path.display().to_string()).collect();
         let shards = shard_records(&files, &locations);
@@ -1521,6 +1558,56 @@ mod tests {
             f.lib.import_reference(&inside),
             Err(RaptorError::InvalidInput(_))
         ));
+    }
+
+    #[test]
+    fn discovered_models_are_registered_in_place_and_survive_reopening() {
+        let f = fixture();
+        let src = write_src(&f.root, "automatic.gguf", &gguf_file("llama", 15));
+        let entry = f.lib.import_discovered(&src).unwrap();
+        assert!(!entry.managed);
+        assert_eq!(f.lib.import_discovered(&src).unwrap().id, entry.id);
+        assert_eq!(
+            f.lib.import_progress(),
+            (0, 0),
+            "known paths are not rehashed"
+        );
+        let reopened = Library::open_at(f.lib.models_dir.clone(), &f.lib.index_path).unwrap();
+        assert_eq!(reopened.list().unwrap().len(), 1);
+        reopened.delete(&entry.id).unwrap();
+        assert!(
+            src.exists(),
+            "automatically registered files are never deleted"
+        );
+    }
+
+    #[test]
+    fn discovered_models_inside_the_library_are_indexed_without_copying() {
+        let f = fixture();
+        fs::create_dir_all(&f.lib.models_dir).unwrap();
+        let src = write_src(&f.lib.models_dir, "found.gguf", &gguf_file("llama", 15));
+        let entry = f.lib.import_discovered(&src).unwrap();
+        assert!(!entry.managed);
+        assert_eq!(f.lib.file_path(&entry.id).unwrap(), src);
+        f.lib.delete(&entry.id).unwrap();
+        assert!(src.exists());
+    }
+
+    #[test]
+    fn discovered_same_names_do_not_block_different_models_and_duplicates_reuse_entries() {
+        let f = fixture();
+        let a_dir = f.root.join("a");
+        let b_dir = f.root.join("b");
+        fs::create_dir_all(&a_dir).unwrap();
+        fs::create_dir_all(&b_dir).unwrap();
+        let a = write_src(&a_dir, "model.gguf", &gguf_file("llama", 15));
+        let b = write_src(&b_dir, "model.gguf", &gguf_file("llama", 16));
+        let first = f.lib.import_discovered(&a).unwrap();
+        let second = f.lib.import_discovered(&b).unwrap();
+        assert_ne!(first.id, second.id);
+        let copy = write_src(&f.root, "copy.gguf", &gguf_file("llama", 15));
+        assert_eq!(f.lib.import_discovered(&copy).unwrap().id, first.id);
+        assert_eq!(f.lib.list().unwrap().len(), 2);
     }
 
     #[test]

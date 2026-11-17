@@ -2,6 +2,7 @@ import { subscribe } from "../api";
 import { applyFinished, applyProgress, refreshDownloads } from "./downloads";
 import { refreshEngine, engineStore } from "./engine";
 import { refreshLibrary } from "./library";
+import { startLocalModelSync } from "./localModels";
 
 /**
  * Connects the backend events to the stores and loads the initial snapshots.
@@ -26,8 +27,10 @@ export function startSync(): () => void {
   void refreshEngine();
   void refreshLibrary();
   void refreshDownloads();
+  const stopLocalModels = startLocalModelSync();
 
   return () => {
+    stopLocalModels();
     void Promise.all(subscriptions).then((unlisteners) => unlisteners.forEach((unlisten) => unlisten()));
   };
 }
