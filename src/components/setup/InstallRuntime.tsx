@@ -84,7 +84,7 @@ export function InstallRuntime({ candidate = null, disabled = false, onInstalled
     }
   }
 
-  const label = candidate ? `Install ${candidate.id} ${candidate.version}` : "Install best runtime";
+  const label = candidate?.degraded ? "Set up CPU engine (slower)" : "Set up recommended engine";
   const confirmReady = preview !== null && previewError === null;
 
   return (
@@ -96,8 +96,8 @@ export function InstallRuntime({ candidate = null, disabled = false, onInstalled
 
       <ConfirmDialog
         open={open}
-        title="Install the inference runtime?"
-        confirmLabel={preview?.already_installed ? "Use installed runtime" : "Download and install"}
+        title="Set up Raptor's model engine?"
+        confirmLabel={preview?.already_installed ? "Use this runtime" : "Download and continue"}
         busy={busy}
         confirmDisabled={!confirmReady}
         onCancel={() => setOpen(false)}
@@ -105,11 +105,10 @@ export function InstallRuntime({ candidate = null, disabled = false, onInstalled
       >
         {candidate ? (
           <p>
-            Raptor will download and verify {candidate.id} {candidate.version} ({candidate.backend.toUpperCase()}).{" "}
-            {candidate.reason}
+            This small engine lets Raptor run AI models. Raptor will download and verify the recommended {candidate.backend.toUpperCase()} version for your computer. {candidate.reason}
           </p>
         ) : (
-          <p>Raptor will download and verify the best compatible runtime for this machine.</p>
+          <p>This small engine lets Raptor run AI models. Raptor will find, download and verify the best match for this computer.</p>
         )}
         {candidate?.degraded && (
           <Notice tone="warn" title="CPU build">

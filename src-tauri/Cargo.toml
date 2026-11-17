@@ -1,6 +1,6 @@
 [package]
 name = "raptor-llm"
-version = "0.1.0"
+version = "0.1.1"
 description = "Raptor LLM local AI runtime"
 authors = ["Raptor LLM"]
 edition = "2021"
@@ -19,6 +19,7 @@ raptor-models = { path = "../crates/raptor-models" }
 raptor-context = { path = "../crates/raptor-context" }
 raptor-gateway = { path = "../crates/raptor-gateway" }
 tauri = { version = "2", features = [] }
+tauri-plugin-updater = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { workspace = true }

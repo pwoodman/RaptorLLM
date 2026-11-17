@@ -113,6 +113,7 @@ pub fn run() {
         eprintln!("Raptor LLM: file logging is off: {e}");
     }
     let built = tauri::Builder::default()
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(app_state)
         .setup(|app| {
             seed_runtime_manifest(app.handle(), &app.state::<AppState>());

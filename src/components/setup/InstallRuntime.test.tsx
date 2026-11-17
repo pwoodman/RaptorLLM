@@ -38,7 +38,7 @@ describe("InstallRuntime confirmation", () => {
     const user = userEvent.setup();
     render(<InstallRuntime onInstalled={() => {}} />);
 
-    await user.click(screen.getByRole("button", { name: "Install best runtime" }));
+    await user.click(screen.getByRole("button", { name: "Set up recommended engine" }));
     const dialog = screen.getByRole("alertdialog");
     expect(await within(dialog).findByText(/Unknown\. The download server did not report a size/)).toBeInTheDocument();
     expect(within(dialog).getByText(preview().url)).toBeInTheDocument();
@@ -51,7 +51,7 @@ describe("InstallRuntime confirmation", () => {
     );
     const user = userEvent.setup();
     render(<InstallRuntime onInstalled={() => {}} />);
-    await user.click(screen.getByRole("button", { name: "Install best runtime" }));
+    await user.click(screen.getByRole("button", { name: "Set up recommended engine" }));
     expect(await screen.findByText(/reported by the download server/)).toBeInTheDocument();
   });
 
@@ -59,10 +59,10 @@ describe("InstallRuntime confirmation", () => {
     vi.mocked(runtimeInstallPreview).mockRejectedValue(new RaptorApiError({ kind: "Network", message: "offline" }));
     const user = userEvent.setup();
     render(<InstallRuntime onInstalled={() => {}} />);
-    await user.click(screen.getByRole("button", { name: "Install best runtime" }));
+    await user.click(screen.getByRole("button", { name: "Set up recommended engine" }));
 
     expect(await screen.findByText("Install details unavailable")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Download and install" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Download and continue" })).toBeDisabled();
     expect(api.runtime.ensure).not.toHaveBeenCalled();
   });
 
@@ -70,9 +70,9 @@ describe("InstallRuntime confirmation", () => {
     vi.mocked(runtimeInstallPreview).mockResolvedValue(preview({ already_installed: true }));
     const user = userEvent.setup();
     render(<InstallRuntime onInstalled={() => {}} />);
-    await user.click(screen.getByRole("button", { name: "Install best runtime" }));
+    await user.click(screen.getByRole("button", { name: "Set up recommended engine" }));
 
     expect(await screen.findByText(/Nothing would be downloaded/)).toBeInTheDocument();
-    await waitFor(() => expect(screen.getByRole("button", { name: "Use installed runtime" })).toBeEnabled());
+    await waitFor(() => expect(screen.getByRole("button", { name: "Use this runtime" })).toBeEnabled());
   });
 });

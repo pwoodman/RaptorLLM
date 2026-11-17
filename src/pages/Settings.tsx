@@ -11,11 +11,11 @@ import { HardwarePanel } from "../components/settings/HardwarePanel";
 import { RuntimePanel } from "../components/settings/RuntimePanel";
 import { ServerPanel } from "../components/settings/ServerPanel";
 import { StoragePanel } from "../components/settings/StoragePanel";
+import { AppUpdates } from "../components/settings/AppUpdates";
 import { ErrorState, LoadingState } from "../components/AsyncState";
 import { Notice } from "../components/Notice";
 import { PageHeader } from "../components/PageHeader";
 import { Panel } from "../components/Panel";
-import pkg from "../../package.json";
 
 const SECTIONS = [
   { id: "hardware", label: "Hardware" },
@@ -88,9 +88,10 @@ export default function SettingsPage() {
 
           <Panel id="about" title="About" icon={<Info size={18} aria-hidden="true" />}>
             <p>
-              Raptor LLM {pkg.version}. Local AI for AMD ROCm and llama.cpp GGUF models, with a context engine for coding
+              Local AI for llama.cpp GGUF models, with a context engine for coding
               agents. Chats, model files and logs stay on this machine. Model search and downloads use Hugging Face.
             </p>
+            <AppUpdates />
           </Panel>
         </div>
       </div>

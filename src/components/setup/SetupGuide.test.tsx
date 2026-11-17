@@ -134,10 +134,11 @@ describe("SetupGuide", () => {
     const user = userEvent.setup();
     render(<SetupGuide />);
 
+    await user.click(await screen.findByText("See all setup details"));
     const list = await screen.findByRole("list");
     expect(within(list).getAllByRole("listitem")).toHaveLength(4);
 
-    await user.click(screen.getByRole("button", { name: "Go to Models" }));
+    await user.click(screen.getByRole("button", { name: "Choose a model" }));
     expect(uiStore.get().page).toBe("models");
 
     await user.click(screen.getByRole("button", { name: "Open storage settings" }));
@@ -206,16 +207,16 @@ describe("SetupGuide", () => {
     const user = userEvent.setup();
     render(<SetupGuide />);
 
-    await user.click(await screen.findByRole("button", { name: "Install llama-hip-win b12340" }));
-    const dialog = screen.getByRole("alertdialog", { name: "Install the inference runtime?" });
+    await user.click(await screen.findByRole("button", { name: "Set up recommended engine" }));
+    const dialog = screen.getByRole("alertdialog", { name: "Set up Raptor's model engine?" });
     expect(dialog).toHaveTextContent("config/runtime-manifest.json");
     expect(api.runtime.ensure).not.toHaveBeenCalled();
 
     await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
     expect(api.runtime.ensure).not.toHaveBeenCalled();
 
-    await user.click(screen.getByRole("button", { name: "Install llama-hip-win b12340" }));
-    const confirm = await screen.findByRole("button", { name: "Download and install" });
+    await user.click(screen.getByRole("button", { name: "Set up recommended engine" }));
+    const confirm = await screen.findByRole("button", { name: "Download and continue" });
     await waitFor(() => expect(confirm).toBeEnabled());
     await user.click(confirm);
     await waitFor(() => expect(api.runtime.ensure).toHaveBeenCalledTimes(1));

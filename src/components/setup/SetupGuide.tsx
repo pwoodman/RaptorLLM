@@ -33,7 +33,7 @@ export function setupNeedsAttention(status: SetupStatus): boolean {
  * First-run checklist, shown on Chats and Models while something is missing. It reads state only.
  * Installing the runtime needs an explicit click and a confirmation. Nothing starts on its own.
  */
-export function SetupGuide() {
+export function SetupGuide({ onModelAction }: { onModelAction?: (action: "discover" | "library") => void } = {}) {
   const status = useStore(engineStore, (s) => s.status);
   const page = useStore(uiStore, (s) => s.page);
   const setup = useAsyncResource(() => setupStatus(), [status]);
@@ -60,24 +60,51 @@ export function SetupGuide() {
   if (data === null || !setupNeedsAttention(data)) return null;
 
   const checks = data.checks.filter((c) => REQUIRED.includes(c.id) || !c.ok);
+  const byId = new Map(checks.map((check) => [check.id, check]));
+  const nextCheck = (["hardware", "storage", "runtime", "model", "gpu"] as const)
+    .map((id) => byId.get(id))
+    .find((check) => check && !check.ok);
+  if (!nextCheck) return null;
 
   return (
     <Panel
       id="setup-guide"
-      title="Finish setup"
+      title="Let's get Raptor ready"
       icon={<Wrench size={18} aria-hidden="true" />}
-      description="Chat needs these. Nothing is downloaded or installed until you choose to."
+      description="We'll walk you through what you need. Downloads only start when you choose them."
     >
       {data.degraded && data.selected_runtime && (
         <Notice tone="danger" title="CPU build in use: generation will be slow">
           {data.selected_runtime.reason}
         </Notice>
       )}
-      <ol className="setup-list">
-        {checks.map((check) => (
-          <SetupItem key={check.id} check={check} data={data} onChanged={setup.reload} onModelsPage={page === "models"} />
-        ))}
-      </ol>
+      <div className="setup-next-step">
+        <span className="setup-step-label">Your next step</span>
+        <h3>{stepTitle(nextCheck.id)}</h3>
+        <p className="muted small">{stepHelp(nextCheck, data)}</p>
+        <ActionFor
+          check={nextCheck}
+          data={data}
+          onChanged={setup.reload}
+          onModelsPage={page === "models"}
+          onModelAction={onModelAction}
+        />
+      </div>
+      <details className="setup-details">
+        <summary>See all setup details</summary>
+        <ol className="setup-list">
+          {checks.map((check) => (
+            <SetupItem
+              key={check.id}
+              check={check}
+              data={data}
+              onChanged={setup.reload}
+              onModelsPage={page === "models"}
+              onModelAction={onModelAction}
+            />
+          ))}
+        </ol>
+      </details>
       {data.notes.map((note) => (
         <p key={note} className="muted small">
           {note}
@@ -87,14 +114,39 @@ export function SetupGuide() {
   );
 }
 
+function stepTitle(id: SetupCheck["id"]): string {
+  switch (id) {
+    case "hardware": return "Check this computer";
+    case "storage": return "Make room before downloading";
+    case "runtime": return "Set up the model engine";
+    case "model": return "Choose your first model";
+    case "gpu": return "Review graphics acceleration";
+    case "performance_memory": return "Review performance storage";
+  }
+}
+
+function stepHelp(check: SetupCheck, data: SetupStatus): string {
+  switch (check.id) {
+    case "hardware": return `${check.detail}. Raptor uses this to choose a compatible setup.`;
+    case "storage": return `${check.detail}. Choose a drive with more free space before downloading large files.`;
+    case "runtime": return data.available_runtime?.degraded
+      ? "This small download lets Raptor run models. The available option uses your CPU and will be slower."
+      : "This small one-time download lets Raptor run models. We'll select the best available option for this computer.";
+    case "model": return "Models are the AI brains you chat with. Pick a recommended download or bring a GGUF file you already have.";
+    case "gpu": return `${check.detail}. You can review the runtime choice in Settings.`;
+    case "performance_memory": return check.detail;
+  }
+}
+
 interface SetupItemProps {
   check: SetupCheck;
   data: SetupStatus;
   onChanged: () => void;
   onModelsPage: boolean;
+  onModelAction?: (action: "discover" | "library") => void;
 }
 
-function SetupItem({ check, data, onChanged, onModelsPage }: SetupItemProps) {
+function SetupItem({ check, data, onChanged, onModelsPage, onModelAction }: SetupItemProps) {
   const Icon = ICONS[check.id];
   const StatusIcon = check.ok ? CheckCircle2 : CircleAlert;
   const tone = check.ok ? "tone-ok" : "tone-warn";
@@ -110,7 +162,15 @@ function SetupItem({ check, data, onChanged, onModelsPage }: SetupItemProps) {
       </div>
       <div className="setup-item-body">
         <p className="muted small">{detailFor(check, data)}</p>
-        {!check.ok && <ActionFor check={check} data={data} onChanged={onChanged} onModelsPage={onModelsPage} />}
+        {!check.ok && (
+          <ActionFor
+            check={check}
+            data={data}
+            onChanged={onChanged}
+            onModelsPage={onModelsPage}
+            onModelAction={onModelAction}
+          />
+        )}
       </div>
     </li>
   );
@@ -129,7 +189,7 @@ function detailFor(check: SetupCheck, data: SetupStatus): string {
   return check.detail;
 }
 
-function ActionFor({ check, data, onChanged, onModelsPage }: SetupItemProps) {
+function ActionFor({ check, data, onChanged, onModelsPage, onModelAction }: SetupItemProps) {
   switch (check.id) {
     case "runtime":
       if (data.runtime_needs_confirmation && data.available_runtime) {
@@ -141,10 +201,21 @@ function ActionFor({ check, data, onChanged, onModelsPage }: SetupItemProps) {
         </button>
       );
     case "model":
-      if (onModelsPage) return <p className="small">Download one from Discover, or import a GGUF file in Library.</p>;
+      if (onModelsPage) {
+        return (
+          <div className="button-row">
+            <button type="button" className="btn btn-sm btn-primary" onClick={() => onModelAction?.("discover")}>
+              Browse recommended models
+            </button>
+            <button type="button" className="btn btn-sm" onClick={() => onModelAction?.("library")}>
+              I already have a model file
+            </button>
+          </div>
+        );
+      }
       return (
         <button type="button" className="btn btn-sm btn-primary" onClick={() => uiStore.set({ page: "models" })}>
-          Go to Models
+          Choose a model
         </button>
       );
     case "hardware":
@@ -157,6 +228,12 @@ function ActionFor({ check, data, onChanged, onModelsPage }: SetupItemProps) {
       return (
         <button type="button" className="btn btn-sm" onClick={() => openSettings("storage")}>
           Open storage settings
+        </button>
+      );
+    case "gpu":
+      return (
+        <button type="button" className="btn btn-sm" onClick={() => openSettings("runtime")}>
+          Review runtime settings
         </button>
       );
     default:

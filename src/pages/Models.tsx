@@ -39,7 +39,7 @@ export default function ModelsPage() {
         description="Find GGUF models on Hugging Face, download them with verification, and load one for chat."
       />
 
-      <SetupGuide />
+      <SetupGuide onModelAction={(action) => setTab(action)} />
 
       <LoadedModelPanel />
       <LoadReport />

@@ -4,6 +4,7 @@ target/
 src-tauri/target/
 *.log
 .env
+/.secrets/
 .DS_Store
 # per-user Claude Code settings
 .claude/settings.local.json

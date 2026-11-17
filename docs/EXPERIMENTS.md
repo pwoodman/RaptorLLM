@@ -231,7 +231,7 @@ Four slots add ~450 MiB to every cell. The compute buffer grows with context for
 - **Pre-reading the GGUF into the OS cache / `--no-mmap` / `--mlock`** for dense models that keep layers in RAM; flint's cold load is 130-140 s of disk reads, a warm one is much faster. Unmeasured.
 - **Oversubscribed MoE on Linux** (shared-memory spill may not exist; the fallback covers it). Untested.
 - **Installer on a clean machine**: built, uninstall script read, never run.
-- **Linux build and packaging**, **live Hugging Face search/download**, **app self-update** (needs a signing key), **Windows key-file ACLs**.
+- **Linux build and packaging**, **live Hugging Face search/download**, **publish the first signed app update** (needs the GitHub Actions signing secret), **Windows key-file ACLs**.
 - **Quality of the three extra models** and long-context behaviour (only speed and GPU use were checked).
 - **Sustained (30-minute) performance, GPU clocks and temperature**: never measured; no reader exists.
 - **Matrix for granite and flint** (done for Qwen to 128K and Ornith to 32K); **matrix with speculation on** (llama-bench is plain decoding); **Ornith/flint above 32K** (their spill makes the numbers unstable).
