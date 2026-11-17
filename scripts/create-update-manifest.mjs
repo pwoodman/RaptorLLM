@@ -11,7 +11,8 @@ async function platform(folder, filename) {
   await readFile(artifact);
   const signature = (await readFile(`${artifact}.sig`, "utf8")).trim();
   if (!signature) throw new Error(`Missing updater signature for ${filename}`);
-  return { signature, url: base + encodeURIComponent(filename) };
+  // GitHub normalizes spaces in uploaded release asset names to periods.
+  return { signature, url: base + encodeURIComponent(filename.replace(/ /g, ".")) };
 }
 const nsis = await platform("nsis", `Raptor LLM_${version}_x64-setup.exe`);
 const msi = await platform("msi", `Raptor LLM_${version}_x64_en-US.msi`);
