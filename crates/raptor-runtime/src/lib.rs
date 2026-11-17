@@ -188,7 +188,11 @@ impl RuntimeEngine {
         let hw = self.probe.probe().await?;
         let mut state = lock(&self.state);
         state.hardware = Some(hw.clone());
-        state.preflight = None;
+        // Sampling memory after a load must retain the device diagnosis for that running
+        // process, including the reason it fell back to CPU.
+        if self.server.status().state == ServerState::Stopped {
+            state.preflight = None;
+        }
         Ok(hw)
     }
 

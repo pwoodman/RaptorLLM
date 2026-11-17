@@ -3,6 +3,9 @@ import ReactDOM from "react-dom/client";
 import "highlight.js/styles/github-dark.css";
 import App from "./App";
 import "./styles.css";
+import { startAppearance } from "./state/appearance";
+
+startAppearance();
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
@@ -10,8 +13,8 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
   </React.StrictMode>,
 );
 
-// The splash in index.html stays up for at least six seconds so the first render is smooth, then fades out.
-const SPLASH_MIN_MS = 6000;
+// Dismiss the splash once the application has rendered, without an artificial startup delay.
+const SPLASH_MIN_MS = 0;
 const splash = document.getElementById("splash");
 if (splash) {
   const remaining = Math.max(0, SPLASH_MIN_MS - performance.now());

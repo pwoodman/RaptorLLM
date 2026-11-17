@@ -29,7 +29,11 @@ export function AppUpdates() {
       setAvailable(update);
       setMessage(update ? `Version ${update.version} is available.` : "You're up to date.");
     } catch (cause) {
-      setError(`Update check failed: ${cause instanceof Error ? cause.message : String(cause)}`);
+      const detail = cause instanceof Error ? cause.message : String(cause);
+      const isMissingFeed = /\b404\b|not found|no release found/i.test(detail);
+      setError(isMissingFeed
+        ? "The signed update feed is not published yet. You can check the GitHub Releases page for the latest installer."
+        : `Couldn't check for updates. Check your internet connection and try again. Details: ${detail}`);
     } finally {
       setChecking(false);
     }
@@ -68,6 +72,9 @@ export function AppUpdates() {
       <p>Version {pkg.version}. Updates are checked against signed GitHub Releases.</p>
       {message && <Notice tone="success">{message}</Notice>}
       {error && <Notice tone="danger">{error}</Notice>}
+      {error && /update feed is not published/i.test(error) && (
+        <p><a href="https://github.com/pwoodman/RaptorLLM/releases" target="_blank" rel="noreferrer">Open GitHub Releases</a></p>
+      )}
       {installing && <progress aria-label="Update download progress" max={100} value={progress ?? undefined} />}
       {available?.body && <p className="muted small">{available.body}</p>}
       <div className="button-row">

@@ -183,6 +183,7 @@ pub fn run() {
             commands::models::models_load_report,
             commands::models::models_load_progress,
             commands::models::models_tune,
+            commands::models::models_saved_tuning,
             commands::models::models_context_matrix,
             commands::models::models_context_matrix_last,
             commands::models::models_context_options,

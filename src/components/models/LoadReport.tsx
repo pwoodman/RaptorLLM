@@ -49,7 +49,9 @@ export function LoadReport() {
       <dl className="facts">
         <div>
           <dt>Config source</dt>
-          <dd>{SOURCE_LABEL[report.config_source]}</dd>
+          <dd>{report.rationale.some((note) => note.startsWith("Tuned on this machine"))
+            ? "Optimized: saved speed settings applied for this model and runtime"
+            : SOURCE_LABEL[report.config_source]}</dd>
         </div>
         {report.preset !== null && (
           <div>

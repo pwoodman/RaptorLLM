@@ -59,11 +59,12 @@ export function ImportPanel() {
   }
 
   async function chooseFolder() {
+    setError(null);
     try {
       const selected = await api.dialog.pickFolder();
       if (selected) await scanDir(selected);
-    } catch {
-      // dialog cancelled or failed
+    } catch (e) {
+      setError(e);
     }
   }
 
@@ -111,7 +112,7 @@ export function ImportPanel() {
 
       <div className="import-actions">
         <button type="button" className="btn btn-primary" disabled={busy} onClick={() => void chooseFolder()}>
-          <FolderSearch size={14} aria-hidden="true" /> {scanning ? "Looking..." : "Choose folder"}
+          <FolderSearch size={14} aria-hidden="true" /> {scanning ? "Looking..." : "Choose model folder"}
         </button>
         <button type="button" className="btn btn-ghost" disabled={busy} onClick={() => void addSingleFile()}>
           Add a single file

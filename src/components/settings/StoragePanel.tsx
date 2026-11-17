@@ -68,12 +68,16 @@ export function StoragePanel({ settings, onChange }: StoragePanelProps) {
       id="storage"
       title="Storage"
       icon={<HardDrive size={18} aria-hidden="true" />}
-      description="Where models, runtimes and downloads are kept."
+      description="Choose the top-level data folder for models, runtimes, downloads, chats and logs."
     >
       <dl className="facts">
         <div>
-          <dt>In use now</dt>
+          <dt>Raptor data folder</dt>
           <dd className="break">{settings.active_storage_dir}</dd>
+        </div>
+        <div>
+          <dt>Managed model folder</dt>
+          <dd className="break">{settings.active_storage_dir.replace(/[\\/]+$/, "") + "\\models"}</dd>
         </div>
         <div>
           <dt>Default location</dt>
@@ -103,7 +107,7 @@ export function StoragePanel({ settings, onChange }: StoragePanelProps) {
       <form className="stack" onSubmit={submit}>
         <div className="field">
           <label htmlFor={inputId} className="field-label">
-            Storage folder
+            Raptor data folder
           </label>
           <div style={{ display: "flex", gap: "0.5rem" }}>
             <input
@@ -117,7 +121,7 @@ export function StoragePanel({ settings, onChange }: StoragePanelProps) {
               {picking ? "Selecting..." : "Browse..."}
             </button>
           </div>
-          <span className="muted small">Choose where future models, runtimes, downloads, chats and logs are kept. Raptor reopens automatically to apply it; existing files are not copied. Leave empty and save to use the default.</span>
+          <span className="muted small">Raptor keeps managed models in a models subfolder and other app data in separate folders inside this location. It reopens automatically to apply a change; existing files are not copied or moved. Leave empty and save to use the default.</span>
         </div>
         <div className="button-row">
           <button type="submit" className="btn btn-primary" disabled={busy}>

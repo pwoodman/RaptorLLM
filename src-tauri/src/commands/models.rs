@@ -154,16 +154,34 @@ pub async fn models_discover(state: State<'_, AppState>) -> Result<Vec<Discovere
     let home = dirs::home_dir();
     let local = dirs::data_local_dir();
     let roaming = dirs::data_dir();
-    let mut known = home
-        .as_deref()
-        .map(|h| {
-            // The folder LM Studio is actually configured to use comes first.
-            let mut list = crate::discover::lm_studio_configured_folders(h, roaming.as_deref());
-            list.extend(crate::discover::known_model_folders(h, local.as_deref()));
-            list
-        })
-        .unwrap_or_default();
-    known.dedup_by(|a, b| a.path == b.path);
+    let mut known = vec![
+        crate::discover::KnownFolder {
+            source: "Raptor model library".into(),
+            path: state.dirs.models(),
+        },
+        crate::discover::KnownFolder {
+            source: "Raptor storage folder".into(),
+            path: state.dirs.root.clone(),
+        },
+    ];
+    if let Some(parent) = state.dirs.root.parent() {
+        // Older installs and manual downloads commonly keep models beside the selected
+        // models data directory, especially in a sibling downloads folder.
+        known.push(crate::discover::KnownFolder {
+            source: "Raptor downloads".into(),
+            path: parent.join("downloads"),
+        });
+    }
+    known.extend(
+        home.as_deref()
+            .map(|h| {
+                // The folder LM Studio is actually configured to use comes first.
+                let mut list = crate::discover::lm_studio_configured_folders(h, roaming.as_deref());
+                list.extend(crate::discover::known_model_folders(h, local.as_deref()));
+                list
+            })
+            .unwrap_or_default(),
+    );
     let added = state.settings.snapshot().model_folders;
     let folders = crate::discover::candidate_folders(known, &added, |p| p.is_dir());
     let models = state.models.clone();
@@ -175,7 +193,16 @@ pub async fn models_discover(state: State<'_, AppState>) -> Result<Vec<Discovere
             };
             let items: Vec<ScanItem> = items
                 .into_iter()
-                .filter(|i| matches!(i.status, raptor_models::library::ScanStatus::New))
+                .filter(|i| {
+                    matches!(i.status, raptor_models::library::ScanStatus::New)
+                        && !i
+                            .path
+                            .file_name()
+                            .and_then(|name| name.to_str())
+                            .is_some_and(|name| {
+                                name.to_ascii_lowercase().starts_with("ggml-vocab-")
+                            })
+                })
                 .collect();
             if !items.is_empty() {
                 out.push(DiscoveredFolder {
@@ -501,4 +528,13 @@ pub async fn models_context_matrix_last(
     model_id: String,
 ) -> Result<Option<crate::ctxbench::MatrixReport>> {
     state.last_context_matrix(&model_id).await
+}
+
+/// Saved profiles for this model and machine, across runtime builds.
+#[tauri::command]
+pub async fn models_saved_tuning(
+    state: State<'_, AppState>,
+    model_id: String,
+) -> Result<Vec<crate::tuned::SavedTuning>> {
+    state.saved_tuning(&model_id).await
 }

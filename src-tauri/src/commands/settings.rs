@@ -75,9 +75,9 @@ fn view(state: &AppState) -> Result<SettingsView> {
         }
     }
     Ok(SettingsView {
-        storage_dir: s.storage_dir.as_ref().map(|p| p.display().to_string()),
-        default_storage_dir: default_root.display().to_string(),
-        active_storage_dir: state.dirs.root.display().to_string(),
+        storage_dir: s.storage_dir.as_ref().map(|p| display_path(p)),
+        default_storage_dir: display_path(&default_root),
+        active_storage_dir: display_path(&state.dirs.root),
         restart_required: effective != state.dirs.root,
         gateway_enabled: s.gateway_enabled,
         gateway_port: s.gateway_port,
@@ -104,6 +104,22 @@ fn view(state: &AppState) -> Result<SettingsView> {
         thinking_effort: s.thinking_effort,
         notes,
     })
+}
+
+/// Windows canonicalize adds the extended-length prefix. Keep it internally for long-path
+/// support, but show the familiar path form in editable controls and copyable status text.
+fn display_path(path: &std::path::Path) -> String {
+    let value = path.to_string_lossy();
+    #[cfg(windows)]
+    {
+        if let Some(unc) = value.strip_prefix(r"\\?\UNC\") {
+            return format!(r"\\{unc}");
+        }
+        if let Some(normal) = value.strip_prefix(r"\\?\") {
+            return normal.to_string();
+        }
+    }
+    value.into_owned()
 }
 
 /// Allows (or forbids) a load to continue on CPU when a GPU backend has no device. Off by

@@ -93,6 +93,22 @@ pub struct Setting {
 }
 
 impl TunedEntry {
+    /// Prefer compatible deep measurements, falling back to the compatible quick profile.
+    pub fn compatible_setting(
+        &self,
+        ctx_size: u32,
+        kv_cache: KvCacheType,
+        flash_attn: bool,
+    ) -> Option<Setting> {
+        if self.long.as_ref().is_some_and(|l| ctx_size >= l.depth)
+            && self.matches_long(kv_cache, flash_attn)
+        {
+            return Some(self.setting_for(ctx_size));
+        }
+        self.matches(kv_cache, flash_attn)
+            .then(|| self.setting_for(0))
+    }
+
     /// Whether this profile was measured with the settings that the current load will use.
     pub fn matches(&self, kv_cache: KvCacheType, flash_attn: bool) -> bool {
         self.profile
@@ -153,6 +169,37 @@ pub fn key(machine: &str, model_sha256: &str, runtime_id: &str, runtime_version:
 }
 
 impl TunedStore {
+    pub fn for_model(&self, machine: &str, sha: &str) -> Vec<SavedTuning> {
+        let prefix = format!("{machine}|{sha}|");
+        self.file
+            .entries
+            .iter()
+            .filter_map(|(key, entry)| {
+                let (runtime_id, runtime_version) = key.strip_prefix(&prefix)?.split_once('|')?;
+                Some(SavedTuning {
+                    runtime_id: runtime_id.into(),
+                    runtime_version: runtime_version.into(),
+                    tuning: entry.clone(),
+                })
+            })
+            .collect()
+    }
+
+    /// Reset all builds/backends for this model in one atomic write.
+    pub fn remove_model(&mut self, machine: &str, sha: &str) -> Result<bool> {
+        let prefix = format!("{machine}|{sha}|");
+        let mut next = File {
+            entries: self.file.entries.clone(),
+        };
+        next.entries.retain(|key, _| !key.starts_with(&prefix));
+        if next.entries.len() == self.file.entries.len() {
+            return Ok(false);
+        }
+        crate::fsutil::write_atomic(&self.path, &serde_json::to_vec_pretty(&next)?)?;
+        self.file = next;
+        Ok(true)
+    }
+
     /// Opens the store at `path`. A missing, unreadable or corrupt file gives an empty store.
     pub fn open(path: &Path) -> Self {
         let file = std::fs::read(path)
@@ -195,6 +242,13 @@ impl TunedStore {
         self.file = next;
         Ok(true)
     }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SavedTuning {
+    pub runtime_id: String,
+    pub runtime_version: String,
+    pub tuning: TunedEntry,
 }
 
 #[cfg(test)]
@@ -298,6 +352,49 @@ mod tests {
         }
         assert!(e.matches_long(KvCacheType::Q8_0, true));
         assert!(!e.matches_long(KvCacheType::F16, true));
+    }
+
+    #[test]
+    fn incompatible_deep_profile_falls_back_to_compatible_quick_profile() {
+        let mut e = entry(256);
+        e.long = Some(long(512));
+        e.long.as_mut().unwrap().profile.as_mut().unwrap().kv_cache = KvCacheType::Q8_0;
+        let quick = e
+            .compatible_setting(65_536, KvCacheType::F16, true)
+            .unwrap();
+        assert!(!quick.long);
+        assert_eq!(quick.ubatch_size, 256);
+        assert!(
+            e.compatible_setting(65_536, KvCacheType::Q8_0, true)
+                .unwrap()
+                .long
+        );
+        assert!(e
+            .compatible_setting(65_536, KvCacheType::Q4_0, true)
+            .is_none());
+    }
+
+    #[test]
+    fn reset_removes_all_runtime_builds_for_only_this_model_and_machine() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tuned.json");
+        let mut store = TunedStore::open(&path);
+        for (machine, sha, version) in [
+            ("pc", "sha", "v1"),
+            ("pc", "sha", "v2"),
+            ("pc", "other", "v1"),
+            ("other", "sha", "v1"),
+        ] {
+            store
+                .put(&key(machine, sha, "hip", version), entry(256))
+                .unwrap();
+        }
+        assert_eq!(store.for_model("pc", "sha").len(), 2);
+        assert!(store.remove_model("pc", "sha").unwrap());
+        let reopened = TunedStore::open(&path);
+        assert!(reopened.for_model("pc", "sha").is_empty());
+        assert_eq!(reopened.for_model("pc", "other").len(), 1);
+        assert_eq!(reopened.for_model("other", "sha").len(), 1);
     }
 
     #[test]

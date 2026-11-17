@@ -122,6 +122,8 @@ pub struct ScanItem {
     pub path: PathBuf,
     pub size_bytes: u64,
     pub status: ScanStatus,
+    pub architecture: Option<String>,
+    pub expert_count: Option<u64>,
 }
 
 /// Shard metadata kept beside an entry. Revision and tags live here too.
@@ -708,11 +710,15 @@ impl Library {
         let mut items = Vec::with_capacity(singles.len() + sets.len());
         for path in singles {
             let size_bytes = fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+            let mut architecture = None;
+            let mut expert_count = None;
             let status = match gguf::parse_file(&path) {
                 Err(e) => ScanStatus::InvalidGguf {
                     reason: e.to_string(),
                 },
-                Ok(_) => {
+                Ok(meta) => {
+                    architecture = meta.architecture.clone();
+                    expert_count = meta.expert_count;
                     // A file that is already referenced by path is known without reading it.
                     // Hashing is the slow part (minutes for a large model), so it comes last.
                     if let Some(id) = referenced_by_path(&state.entries, &path) {
@@ -733,6 +739,8 @@ impl Library {
                 path,
                 size_bytes,
                 status,
+                architecture,
+                expert_count,
             });
         }
         for ((_, prefix, total), mut members) in sets {
@@ -769,7 +777,10 @@ impl Library {
                     }
                 }
             };
+            let meta = gguf::parse_file(&first).ok();
             items.push(ScanItem {
+                architecture: meta.as_ref().and_then(|meta| meta.architecture.clone()),
+                expert_count: meta.and_then(|meta| meta.expert_count),
                 path: first,
                 size_bytes,
                 status,
@@ -784,6 +795,8 @@ impl Library {
                     reason: "incomplete download (.gguf.part): not installed and never listed as a model"
                         .into(),
                 },
+                architecture: None,
+                expert_count: None,
             });
         }
         Ok(items)

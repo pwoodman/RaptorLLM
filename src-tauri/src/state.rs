@@ -1143,6 +1143,7 @@ impl AppState {
         // later step reads the runtime in use, so it is read again here.
         let backend_notes = self.apply_backend_choice(model_id, &entry, &hw).await?;
         let runtime = self.runtime.status().runtime.unwrap_or(runtime);
+        let saved_tuning = lock(&self.tuned).get(&self.tuned_key(&hw, &entry.sha256, &runtime));
 
         let draft_bytes = self.planned_draft_bytes(
             &entry,
@@ -1158,7 +1159,22 @@ impl AppState {
             .recommend_for_entry_with(&entry, &path, ctx, draft_bytes)
             .await?;
         let mut notes = Vec::new();
-        let known = self.known_good_for(&entry.sha256, &path, &runtime, &hw, ctx, &mut notes)?;
+        // Compare the effective window: the requested target may exceed the model's trained
+        // limit or memory budget. Comparing against the raw target discards every saved load.
+        let mut known = self.known_good_for(
+            &entry.sha256,
+            &path,
+            &runtime,
+            &hw,
+            recommended.ctx_size,
+            &mut notes,
+        )?;
+        // An explicit speed sweep takes precedence over the opportunistic post-load benchmark.
+        // Start from the same recommendation as the tuner, so an older known-good cache choice
+        // cannot make the new tuning look incompatible on every subsequent load.
+        if saved_tuning.as_ref().is_some_and(|t| t.profile.is_some()) {
+            known = None;
+        }
         let (config, config_source, mut rationale) = match known {
             Some(kg) => {
                 let mut r = perf::known_good_rationale(&kg.record);
@@ -1234,19 +1250,11 @@ impl AppState {
         // What tuning measured on this machine for this model and runtime build wins over the
         // general rules, with the untuned plan kept as the fallback if it cannot start.
         let untuned = config.clone();
-        let saved_tuning = lock(&self.tuned).get(&self.tuned_key(&hw, &entry.sha256, &runtime));
-        let tuned = saved_tuning.as_ref().filter(|t| {
-            if t.setting_for(config.ctx_size).long {
-                t.matches_long(config.kv_cache, config.flash_attn)
-            } else {
-                t.matches(config.kv_cache, config.flash_attn)
-            }
+        let tuned = saved_tuning.as_ref().and_then(|t| {
+            t.compatible_setting(config.ctx_size, config.kv_cache, config.flash_attn)
         });
         let mut tuned_applied = false;
-        if let (Some(t), false) = (&tuned, config.embeddings) {
-            // The long-prompt setting (opt-in deep tune) applies to windows as large as the depth
-            // it was measured at; smaller windows use the quick-tune setting.
-            let s = t.setting_for(config.ctx_size);
+        if let (Some(s), false) = (&tuned, config.embeddings) {
             config.gpu_layers = s.gpu_layers.min(facts.offload_layers);
             config.ubatch_size = s.ubatch_size.min(config.batch_size);
             tuned_applied = true;
@@ -1285,7 +1293,13 @@ impl AppState {
         });
         let mut attempts = crate::tuning::plan(&config, &facts);
         if tuned_applied {
-            for a in crate::tuning::plan(&untuned, &facts) {
+            for a in crate::tuning::plan(
+                &untuned,
+                &crate::tuning::Facts {
+                    layers_measured: false,
+                    ..facts.clone()
+                },
+            ) {
                 if !attempts.iter().any(|b| b.config == a.config) {
                     attempts.push(a);
                 }
@@ -1319,6 +1333,15 @@ impl AppState {
         };
         rationale.extend(chosen.notes);
         let config = chosen.config;
+        if let Some(saved) = &tuned {
+            if tuned_applied
+                && (config.gpu_layers != saved.gpu_layers.min(facts.offload_layers)
+                    || config.ubatch_size != saved.ubatch_size.min(config.batch_size))
+            {
+                rationale.retain(|note| !note.starts_with("Tuned on this machine"));
+                rationale.push("Saved speed settings could not start. This load uses the automatic fallback; your saved profile is still kept.".into());
+            }
+        }
         if config.ctx_size < crate::settings::MIN_CONTEXT_TARGET {
             rationale.push(format!(
                 "Only {} context tokens fit for this model and machine, below the 65,536-token coding-agent target. The model's trained limit, available memory, and selected GPU offload constrain the effective window.",
@@ -1591,13 +1614,18 @@ impl AppState {
 
     /// Forgets the tuning of a model, so the general rules apply again. True when there was one.
     pub async fn forget_tuning(&self, model_id: &str) -> Result<bool> {
+        let _guard = self.runtime_lock.lock().await;
         let entry = self.models.library().get(model_id)?;
         let hw = self.hardware_for_use().await?;
-        let runtime = self.runtime.status().runtime.ok_or_else(|| {
-            RaptorError::Conflict("the llama.cpp runtime is not installed".into())
-        })?;
-        let key = self.tuned_key(&hw, &entry.sha256, &runtime);
-        lock(&self.tuned).remove(&key)
+        let key = perf::key_for(&hw, &entry.sha256, "");
+        lock(&self.tuned).remove_model(&key.machine, &entry.sha256)
+    }
+
+    pub async fn saved_tuning(&self, model_id: &str) -> Result<Vec<crate::tuned::SavedTuning>> {
+        let entry = self.models.library().get(model_id)?;
+        let hw = self.hardware_for_use().await?;
+        let key = perf::key_for(&hw, &entry.sha256, "");
+        Ok(lock(&self.tuned).for_model(&key.machine, &entry.sha256))
     }
 
     /// Measures the model at the layer counts and micro-batch sizes worth trying on this machine

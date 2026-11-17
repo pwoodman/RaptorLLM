@@ -3,7 +3,7 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ModelEntry, TuneReport } from "../../api";
 
-const mocks = vi.hoisted(() => ({ tune: vi.fn(), progress: vi.fn(), forget: vi.fn() }));
+const mocks = vi.hoisted(() => ({ tune: vi.fn(), progress: vi.fn(), forget: vi.fn(), saved: vi.fn() }));
 
 vi.mock("../../api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../api")>();
@@ -11,12 +11,13 @@ vi.mock("../../api", async (importOriginal) => {
     ...actual,
     api: {
       ...actual.api,
-      models: { ...actual.api.models, tune: mocks.tune, tuneProgress: mocks.progress, forgetTuning: mocks.forget },
+      models: { ...actual.api.models, tune: mocks.tune, tuneProgress: mocks.progress, forgetTuning: mocks.forget, savedTuning: mocks.saved },
     },
   };
 });
 
 import { longTuneSummary, tps, TuneSpeed, tuneSummary } from "./TuneSpeed";
+import { tuningStore } from "../../state/tuning";
 
 const entry = { id: "local/o.gguf", file_name: "o.gguf" } as ModelEntry;
 
@@ -79,7 +80,9 @@ describe("longTuneSummary", () => {
 
 describe("TuneSpeed", () => {
   beforeEach(() => {
+    tuningStore.set({ activeId: null, reports: {} });
     mocks.tune.mockReset();
+    mocks.saved.mockResolvedValue([]);
     mocks.progress.mockResolvedValue({ done: 0, total: 0 });
   });
 
@@ -92,7 +95,8 @@ describe("TuneSpeed", () => {
     await userEvent.click(screen.getByRole("button", { name: "Start tuning" }));
 
     await waitFor(() => expect(mocks.tune).toHaveBeenCalledWith("local/o.gguf", false));
-    expect(await screen.findByRole("table", { name: "Measured settings" })).toBeInTheDocument();
+    await userEvent.click(await screen.findByText("Benchmark details and measured settings"));
+    expect(screen.getByRole("table", { name: "Measured settings" })).toBeInTheDocument();
     expect(screen.getByText(/41 layers on the GPU/)).toBeInTheDocument();
   });
 
@@ -109,9 +113,37 @@ describe("TuneSpeed", () => {
     expect(await screen.findByText(/39 layers on the GPU, micro-batch 512 is faster/)).toBeInTheDocument();
   });
 
+  it("restores saved profiles after reopening and resets them", async () => {
+    mocks.saved.mockResolvedValue([{ runtime_id: "hip", runtime_version: "b123", tuning: {
+      gpu_layers: 30, ubatch_size: 512, measured_at: 1, prompt_tps: 500, gen_tps: 30, long: null,
+    } }]);
+    mocks.forget.mockResolvedValue(true);
+    const view = render(<TuneSpeed entry={entry} disabled={false} />);
+    expect(await screen.findByText("Speed settings saved")).toBeInTheDocument();
+    view.unmount();
+    render(<TuneSpeed entry={entry} disabled={false} />);
+    expect(await screen.findByText(/30 GPU layers/)).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Reset speed settings" }));
+    await waitFor(() => expect(screen.queryByText("Speed settings saved")).not.toBeInTheDocument());
+    expect(mocks.forget).toHaveBeenCalledWith(entry.id);
+  });
+
   it("is unavailable while a model is loaded", () => {
     render(<TuneSpeed entry={entry} disabled />);
     expect(screen.getByRole("button", { name: /Optimize speed/ })).toBeDisabled();
+  });
+
+  it("keeps an optimization visible when leaving and reopening the page", async () => {
+    let finish!: (value: TuneReport) => void;
+    mocks.tune.mockReturnValue(new Promise<TuneReport>((resolve) => { finish = resolve; }));
+    const view = render(<TuneSpeed entry={entry} disabled={false} />);
+    await userEvent.click(screen.getByRole("button", { name: /Optimize speed/ }));
+    await userEvent.click(screen.getByRole("button", { name: "Start tuning" }));
+    view.unmount();
+    render(<TuneSpeed entry={entry} disabled />);
+    expect(screen.getByRole("button", { name: /Tuning/ })).toBeDisabled();
+    finish(report());
+    expect(await screen.findByText(/Saved: future loads/)).toBeInTheDocument();
   });
 
   it("shows why tuning failed", async () => {

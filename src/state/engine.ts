@@ -31,7 +31,7 @@ export interface EngineState {
    * Null after unload, a stop, or a refused load.
    */
   loadReport: LoadModelOutcome | null;
-  busy: "loading" | "unloading" | null;
+  busy: "loading" | "unloading" | "optimizing" | null;
 }
 
 export const engineStore = createStore<EngineState>({

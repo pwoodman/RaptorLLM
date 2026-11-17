@@ -21,6 +21,13 @@ function outcome(gpu_memory: GpuMemoryReport | null): LoadModelOutcome {
 describe("LoadReport GPU memory", () => {
   afterEach(() => engineStore.set({ loadReport: null }));
 
+  it("identifies saved optimization settings as the load source", () => {
+    engineStore.set({ loadReport: { ...outcome(null), rationale: ["Tuned on this machine: 30 layers on the GPU."] } });
+    render(<LoadReport />);
+    expect(screen.getByText("Optimized: saved speed settings applied for this model and runtime")).toBeInTheDocument();
+    expect(screen.queryByText(/no measured settings yet/)).not.toBeInTheDocument();
+  });
+
   it("warns when a dense load spilled into shared memory", () => {
     engineStore.set({ loadReport: outcome({ dedicated_mib: 15609, shared_growth_mib: 1798, spilled: true, expected: false }) });
     render(<LoadReport />);

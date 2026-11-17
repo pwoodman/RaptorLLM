@@ -211,6 +211,8 @@ export interface GgufMeta {
   version: number;
   kv_count: number;
   architecture: string | null;
+  expert_count?: number | null;
+  expert_used_count?: number | null;
   name: string | null;
   file_type: number | null;
   quant_label: string | null;
@@ -253,6 +255,19 @@ export interface TuneMeasured {
   gen_tps: number;
   /** Time of a 4096-token prompt plus a 256-token reply, seconds. */
   seconds: number;
+}
+
+export interface SavedTuning {
+  runtime_id: string;
+  runtime_version: string;
+  tuning: {
+    gpu_layers: number;
+    ubatch_size: number;
+    measured_at: number;
+    prompt_tps: number;
+    gen_tps: number;
+    long: { gpu_layers: number; ubatch_size: number; depth: number } | null;
+  };
 }
 
 export interface TuneReport {
@@ -336,6 +351,8 @@ export interface ScanItem {
   path: string;
   size_bytes: number;
   status: ScanStatus;
+  architecture: string | null;
+  expert_count: number | null;
 }
 
 export type JobState =
@@ -917,6 +934,7 @@ export const api = {
     /** Models in other apps' folders (LM Studio, Jan, ...) and folders scanned before, not yet in the library. */
     discover: () => call<DiscoveredFolder[]>("models_discover"),
     /** Benchmarks a model on the GPU and saves the fastest settings. Takes minutes; the model must not be loaded. */
+    savedTuning: (modelId: string) => call<SavedTuning[]>("models_saved_tuning", { modelId }),
     tune: (modelId: string, deep = false) => call<TuneReport>("models_tune", { modelId, deep }),
     /** Speed and memory at growing context lengths (up to `maxDepth`, default 32,768). Takes minutes; the model must not be loaded. */
     contextMatrix: (modelId: string, maxDepth: number | null = null) =>

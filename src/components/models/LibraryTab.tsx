@@ -15,6 +15,8 @@ import { LoadFailureCard } from "./LoadFailureCard";
 import { PresetsPanel } from "./PresetsPanel";
 import { ContextMatrix } from "./ContextMatrix";
 import { TuneSpeed } from "./TuneSpeed";
+import { DiscoveredModels } from "../chat/DiscoveredModels";
+import { modelKind } from "../../lib/modelKind";
 
 export function LibraryTab() {
   const models = useStore(libraryStore, (s) => s.models);
@@ -63,6 +65,8 @@ export function LibraryTab() {
         </dl>
       )}
 
+      <DiscoveredModels showEmpty />
+
       {libraryError !== null && (
         <Notice
           tone="danger"
@@ -81,8 +85,15 @@ export function LibraryTab() {
       {models === null && libraryError === null && <LoadingState label="Reading the library..." />}
       {models !== null && models.length === 0 && (
         <EmptyState icon={Bot} title="No models installed">
-          Download one from Discover, or import a GGUF file below.
+          Raptor checks common model folders above. You can also choose a model folder below or download one from Discover.
         </EmptyState>
+      )}
+
+      {models !== null && models.length > 0 && (
+        <Notice tone="info" title="Get the best speed from each model">
+          Open <strong>Model options and speed</strong>, then choose <strong>Optimize speed</strong> to measure it on this PC and save the fastest settings.
+          Raptor shows the default-versus-optimized speed comparison after tuning.
+        </Notice>
       )}
 
       {models !== null && models.length > 0 && (
@@ -95,6 +106,7 @@ export function LibraryTab() {
                   <span className="model-name break">
                     {entry.file_name}
                     {isLoaded && <span className="badge tone-ok">Loaded</span>}
+                    <span className="badge">{modelKind(entry.gguf)}</span>
                   </span>
                   <span className="muted small">
                     {formatBytes(entry.size_bytes)} · {entry.gguf.quant_label ?? "Unknown quant"} ·{" "}
@@ -105,6 +117,8 @@ export function LibraryTab() {
                   {!entry.managed && (
                     <span className="muted small break">Location: {entry.location}</span>
                   )}
+                  <details className="model-options">
+                    <summary>Model options and speed</summary>
                   <BackendChoice modelId={entry.id} disabled={busy !== null} />
                   <ContextChoice
                     modelId={entry.id}
@@ -112,8 +126,9 @@ export function LibraryTab() {
                     value={windows[entry.id] ?? null}
                     onChange={(o) => setWindows((w) => ({ ...w, [entry.id]: o }))}
                   />
-                  <TuneSpeed entry={entry} disabled={loaded !== null || busy !== null} />
+                  <TuneSpeed entry={entry} disabled={loaded !== null || busy !== null} prominent />
                   <ContextMatrix modelId={entry.id} disabled={loaded !== null || busy !== null} />
+                  </details>
                 </div>
                 <div className="model-row-actions">
                   {isLoaded ? (
@@ -147,7 +162,7 @@ export function LibraryTab() {
                   <button
                     type="button"
                     className="btn btn-ghost btn-sm icon-text-danger"
-                    disabled={isLoaded}
+                    disabled={isLoaded || busy !== null}
                     title={isLoaded ? "Unload this model before deleting it" : `Delete ${entry.file_name}`}
                     onClick={() => setDeleteTarget(entry)}
                   >

@@ -438,14 +438,72 @@ fn pick_file_dialog(filter_ext: Option<&[String]>) -> Result<Option<String>> {
 
 #[cfg(windows)]
 fn pick_folder_dialog() -> Result<Option<String>> {
-    let script =
-        "[System.Reflection.Assembly]::LoadWithPartialName('System.Windows.Forms') | Out-Null; \
-         $d = New-Object System.Windows.Forms.FolderBrowserDialog; \
-         $d.ShowNewFolderButton = $true; \
-         if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { \
-             [Console]::Write($d.SelectedPath) \
-         }";
-    run_powershell_dialog(script)
+    std::thread::Builder::new()
+        .name("raptor-folder-picker".into())
+        .spawn(pick_folder_dialog_sta)
+        .map_err(|e| RaptorError::Runtime(format!("could not start folder picker: {e}")))?
+        .join()
+        .map_err(|_| RaptorError::Runtime("Windows folder picker stopped unexpectedly".into()))?
+}
+
+#[cfg(windows)]
+fn pick_folder_dialog_sta() -> Result<Option<String>> {
+    use std::ptr::{null, null_mut};
+    use windows_sys::Win32::System::Com::{
+        CoInitializeEx, CoTaskMemFree, CoUninitialize, COINIT_APARTMENTTHREADED,
+    };
+    use windows_sys::Win32::UI::Shell::{
+        SHBrowseForFolderW, SHGetPathFromIDListEx, BIF_EDITBOX, BIF_NEWDIALOGSTYLE,
+        BIF_RETURNONLYFSDIRS, BROWSEINFOW, GPFIDL_DEFAULT,
+    };
+
+    struct ComApartment;
+    impl Drop for ComApartment {
+        fn drop(&mut self) {
+            unsafe { CoUninitialize() };
+        }
+    }
+
+    let initialized = unsafe { CoInitializeEx(null(), COINIT_APARTMENTTHREADED as u32) };
+    if initialized < 0 {
+        return Err(RaptorError::Runtime(format!(
+            "could not initialize Windows folder picker (0x{:08X})",
+            initialized as u32
+        )));
+    }
+    let _apartment = ComApartment;
+
+    let mut display_name = [0u16; 260];
+    let title: Vec<u16> = "Choose a folder containing GGUF models\0"
+        .encode_utf16()
+        .collect();
+    let info = BROWSEINFOW {
+        hwndOwner: null_mut(),
+        pidlRoot: null_mut(),
+        pszDisplayName: display_name.as_mut_ptr(),
+        lpszTitle: title.as_ptr(),
+        ulFlags: BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE | BIF_EDITBOX,
+        lpfn: None,
+        lParam: 0,
+        iImage: 0,
+    };
+    let item = unsafe { SHBrowseForFolderW(&info) };
+    if item.is_null() {
+        return Ok(None);
+    }
+
+    let mut path = vec![0u16; 32_768];
+    let converted = unsafe {
+        SHGetPathFromIDListEx(item, path.as_mut_ptr(), path.len() as u32, GPFIDL_DEFAULT)
+    };
+    unsafe { CoTaskMemFree(item.cast()) };
+    if converted == 0 {
+        return Err(RaptorError::Runtime(
+            "Windows could not return the selected folder path".into(),
+        ));
+    }
+    let len = path.iter().position(|c| *c == 0).unwrap_or(path.len());
+    Ok(Some(String::from_utf16_lossy(&path[..len])))
 }
 
 /// Opens the native save dialog with `default_name` (a plain file name) and returns the path

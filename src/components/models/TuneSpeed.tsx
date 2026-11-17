@@ -1,6 +1,9 @@
 import { useEffect, useState } from "react";
 import { Gauge } from "lucide-react";
-import { api, type ModelEntry, type TuneReport } from "../../api";
+import { api, type ModelEntry, type TuneReport, type SavedTuning } from "../../api";
+import { engineStore } from "../../state/engine";
+import { tuningStore } from "../../state/tuning";
+import { useStore } from "../../hooks/useStore";
 import { messageOf } from "../../lib/errors";
 import { ConfirmDialog } from "../ConfirmDialog";
 import { Notice } from "../Notice";
@@ -25,9 +28,9 @@ export function tuneSummary(r: TuneReport): string {
   const b = r.best;
   const where = `${b.gpu_layers} layers on the GPU, micro-batch ${b.ubatch}`;
   if (r.improvement_percent < 3) {
-    return `The default setup was already the fastest found (${where}): ${tps(b.prompt_tps)} prompt, ${tps(b.gen_tps)} generation.`;
+    return `The default setup was already the fastest found (${where}): ${tps(b.prompt_tps)} prompt, ${tps(b.gen_tps)} generation. Saved for future loads with the same runtime and cache settings.`;
   }
-  return `${where}: ${tps(b.prompt_tps)} prompt, ${tps(b.gen_tps)} generation. About ${Math.round(r.improvement_percent)}% less time for a long prompt plus a reply than the default setup. Saved: every load of this model now uses it.`;
+  return `${where}: ${tps(b.prompt_tps)} prompt, ${tps(b.gen_tps)} generation. About ${Math.round(r.improvement_percent)}% less time for a long prompt plus a reply than the default setup. Saved: future loads with the same runtime and cache settings use it.`;
 }
 
 /** The long-prompt result of a deep tune in a sentence, or null when none ran or none worked. Pure. */
@@ -49,12 +52,24 @@ export function longTuneSummary(r: TuneReport): string | null {
  * remembers the fastest, so loads use it. It runs a benchmark on the GPU for a few minutes, so it
  * is offered only while no model is loaded, and it asks first.
  */
-export function TuneSpeed({ entry, disabled, onRunningChange }: { entry: ModelEntry; disabled: boolean; onRunningChange?: (running: boolean) => void }) {
+export function TuneSpeed({ entry, disabled, onRunningChange, prominent = false }: { entry: ModelEntry; disabled: boolean; onRunningChange?: (running: boolean) => void; prominent?: boolean }) {
+  const running = useStore(tuningStore, (s) => s.activeId === entry.id);
+  const report = useStore(tuningStore, (s) => s.reports[entry.id] ?? null);
+  const setReport = (next: TuneReport | null) => tuningStore.set((s) => ({ reports: { ...s.reports, [entry.id]: next } }));
+  const [saved, setSaved] = useState<SavedTuning[]>([]);
+  const [savedError, setSavedError] = useState(false);
+  const [resetting, setResetting] = useState(false);
+  useEffect(() => {
+    let current = true;
+    api.models.savedTuning(entry.id).then(
+      (profiles) => { if (current) { setSaved(profiles); setSavedError(false); } },
+      () => { if (current) setSavedError(true); },
+    );
+    return () => { current = false; };
+  }, [entry.id, running]);
   const [asking, setAsking] = useState(false);
   const [deep, setDeep] = useState(false);
-  const [running, setRunning] = useState(false);
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
-  const [report, setReport] = useState<TuneReport | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -79,35 +94,42 @@ export function TuneSpeed({ entry, disabled, onRunningChange }: { entry: ModelEn
 
   async function start() {
     setAsking(false);
-    setRunning(true);
+    tuningStore.set({ activeId: entry.id });
+    engineStore.set({ busy: "optimizing" });
     onRunningChange?.(true);
     setError(null);
     setReport(null);
     try {
       setReport(await api.models.tune(entry.id, deep));
+      try { setSaved(await api.models.savedTuning(entry.id)); setSavedError(false); }
+      catch { setSavedError(true); }
     } catch (e) {
       setError(messageOf(e));
     } finally {
-      setRunning(false);
+      tuningStore.set({ activeId: null });
+      engineStore.set({ busy: null });
       onRunningChange?.(false);
     }
   }
 
   async function forget() {
+    setResetting(true);
+    setError(null);
     try {
       await api.models.forgetTuning(entry.id);
       setReport(null);
+      setSaved([]);
     } catch (e) {
       setError(messageOf(e));
-    }
+    } finally { setResetting(false); }
   }
 
   return (
     <div className="tune-speed">
       <button
         type="button"
-        className="btn btn-ghost btn-sm"
-        disabled={disabled || running}
+        className={prominent ? "btn btn-primary" : "btn btn-ghost btn-sm"}
+        disabled={disabled || running || resetting}
         title={disabled && !running ? "Unload the model first: tuning needs the GPU" : "Find the fastest settings for this model"}
         onClick={() => setAsking(true)}
       >
@@ -131,9 +153,23 @@ export function TuneSpeed({ entry, disabled, onRunningChange }: { entry: ModelEn
           {error}
         </Notice>
       )}
+      {saved.length > 0 && !running && (
+        <div className="saved-tuning" role="status">
+          <strong className="small">Speed settings saved</strong>
+          <p className="small muted">Applied automatically when the runtime and cache settings match. You can load the model now.</p>
+          {saved.map((profile) => <p className="small" key={`${profile.runtime_id}-${profile.runtime_version}`}>
+            {profile.runtime_id} {profile.runtime_version}: {profile.tuning.gpu_layers} GPU layers · micro-batch {profile.tuning.ubatch_size}
+            {profile.tuning.long && ` · long-context profile from ${profile.tuning.long.depth.toLocaleString()} tokens`}
+          </p>)}
+          <button type="button" className="btn btn-ghost btn-sm" disabled={disabled || resetting} onClick={() => void forget()}>{resetting ? "Resetting…" : "Reset speed settings"}</button>
+        </div>
+      )}
+      {savedError && <p role="status" className="small muted">Saved speed settings could not be read. Reopen this page to try again.</p>}
       {report !== null && (
         <div className="tune-report">
           <p className="small">{tuneSummary(report)}</p>
+          <details className="tune-details">
+          <summary>Benchmark details and measured settings</summary>
           {report.baseline !== null && (
             <div className="table-wrap">
               <table className="small tune-table" aria-label="Default and Raptor optimized speed comparison">
@@ -172,7 +208,7 @@ export function TuneSpeed({ entry, disabled, onRunningChange }: { entry: ModelEn
               </table>
               {report.baseline_live && report.best_live ? (
                 <p className="muted small">
-                  {entry.gguf.quant_label ?? "Unknown quantization"} model on {report.gpu_name ?? "unknown GPU"}
+                  {entry.gguf?.quant_label ?? "Unknown quantization"} model on {report.gpu_name ?? "unknown GPU"}
                   {report.gpu_driver ? ` (driver ${report.gpu_driver})` : " (driver unknown)"}; matched streamed requests on {report.runtime_id ?? "the selected runtime"} {report.runtime_version ?? ""}
                   {report.backend ? ` (${report.backend.toUpperCase()})` : ""}, {report.context_size?.toLocaleString() ?? "same"} context,
                   {report.baseline_live.prompt_tokens_exact ? " exact" : " estimated"} {report.baseline_live.prompt_tokens} prompt tokens,
@@ -217,9 +253,7 @@ export function TuneSpeed({ entry, disabled, onRunningChange }: { entry: ModelEn
               Not measured: {e}
             </p>
           ))}
-          <button type="button" className="btn btn-ghost btn-sm" onClick={() => void forget()}>
-            Forget this tuning
-          </button>
+          </details>
         </div>
       )}
       <ConfirmDialog
@@ -230,9 +264,9 @@ export function TuneSpeed({ entry, disabled, onRunningChange }: { entry: ModelEn
         onConfirm={() => void start()}
       >
         <p>
-          Raptor will run a 3-repeat speed sweep, then compare the default and fastest settings with a warm-up and 3 streamed
-          requests each so it can measure time to first token. It takes a few minutes, starts the model several times, and
-          uses the GPU and model memory meanwhile, so close other heavy programs. Nothing is changed in the model file.
+          Raptor will try a few setups and save the fastest for this model on your PC. This takes a few minutes.
+          Keep Raptor open and pause other GPU-heavy work. When it finishes, load your model as usual; compatible saved
+          settings apply automatically.
         </p>
         <label className="small">
           <input type="checkbox" checked={deep} onChange={(e) => setDeep(e.target.checked)} /> Also tune for long

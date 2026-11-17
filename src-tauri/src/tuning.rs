@@ -199,7 +199,9 @@ pub fn plan(base: &LaunchConfig, f: &Facts) -> Vec<Attempt> {
     };
 
     let mut variants: Vec<(bool, Option<SpecMode>)> = Vec::new();
-    let over = oversubscription_applies(base, f) || dense_spill_applies(base, f);
+    // Measured layer and micro-batch choices take precedence over spill heuristics.
+    let over =
+        !f.layers_measured && (oversubscription_applies(base, f) || dense_spill_applies(base, f));
     let moe = is_sparse_moe(f.experts);
     let mut specs = vec![primary];
     if matches!(primary, Some(SpecMode::Mtp | SpecMode::Dflash)) {
@@ -304,6 +306,22 @@ mod tests {
             ram_total: 64 * GIB,
             ram_avail: 40 * GIB,
             cpu_threads: 16,
+        }
+    }
+
+    #[test]
+    fn measured_sparse_moe_settings_are_not_overridden_by_spill_heuristics() {
+        let f = Facts {
+            experts: Some((256, 6)),
+            layers_measured: true,
+            ..facts()
+        };
+        let mut config = base(30);
+        config.ubatch_size = 512;
+        assert!(oversubscription_applies(&config, &f));
+        for attempt in plan(&config, &f) {
+            assert_eq!(attempt.config.gpu_layers, 30);
+            assert_eq!(attempt.config.ubatch_size, 512);
         }
     }
 

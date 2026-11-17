@@ -16,8 +16,10 @@ import { ErrorState, LoadingState } from "../components/AsyncState";
 import { Notice } from "../components/Notice";
 import { PageHeader } from "../components/PageHeader";
 import { Panel } from "../components/Panel";
+import { AppearancePanel } from "../components/settings/AppearancePanel";
 
 const SECTIONS = [
+  { id: "appearance", label: "Appearance" },
   { id: "hardware", label: "Hardware" },
   { id: "runtime", label: "Inference runtime" },
   { id: "dependencies", label: "Dependencies" },
@@ -49,7 +51,7 @@ export default function SettingsPage() {
       <PageHeader
         eyebrow="Preferences and runtime"
         title="Settings"
-        description="Hardware, the inference runtime, network exposure, storage and the context engine."
+        description="Make Raptor your own. Appearance changes apply right away; other controls explain when they take effect."
       />
 
       {view?.notes.map((note) => (
@@ -68,6 +70,7 @@ export default function SettingsPage() {
         </nav>
 
         <div className="settings-content">
+          <AppearancePanel />
           <HardwarePanel />
           <RuntimePanel />
           <DependenciesPanel />
