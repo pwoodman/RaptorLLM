@@ -264,6 +264,7 @@ export interface SavedTuning {
     gpu_layers: number;
     ubatch_size: number;
     measured_at: number;
+    profile?: { kv_cache: KvCacheType; flash_attn: boolean } | null;
     prompt_tps: number;
     gen_tps: number;
     long: { gpu_layers: number; ubatch_size: number; depth: number } | null;
@@ -405,6 +406,8 @@ export interface QueueEntry {
 export type ImportMode = "copy" | "reference";
 
 export interface LoadModelResult {
+  /** True only when a saved tuning profile was applied to this successful load. */
+  tuning_applied?: boolean;
   status: EngineStatus;
   rationale: string[];
   estimate: MemoryEstimate;
@@ -537,6 +540,8 @@ export interface SettingsView {
 
 /** Speed of one reply, as the gateway measured it. Any field may be missing. */
 export interface ReplyStats {
+  /** Captured when this reply began; independent of the model loaded when viewing history. */
+  raptor_optimized?: boolean;
   tokens_per_second?: number | null;
   prompt_tokens_per_second?: number | null;
   time_to_first_token_ms?: number | null;
@@ -901,10 +906,12 @@ export const api = {
   },
 
   runtime: {
+    idleStatus: () => call<{ idle_seconds: number | null; work_active: boolean }>("app_idle_status"),
     status: () => call<EngineStatus>("runtime_status"),
     ensure: () => call<RuntimeSelectionView>("runtime_ensure"),
     /** Bytes of the runtime download written so far; 0 before it starts. */
     installProgress: () => call<number>("runtime_install_progress"),
+    installStatus: () => call<{ stage: "idle" | "preparing" | "downloading" | "verifying" | "installing" | "ready" | "failed"; downloaded: number }>("runtime_install_status"),
     rollback: (id: string) => call<RuntimeRollbackView>("runtime_rollback", { id }),
     unpin: () => call<void>("runtime_unpin"),
     list: () => call<RuntimeListView>("runtime_list"),

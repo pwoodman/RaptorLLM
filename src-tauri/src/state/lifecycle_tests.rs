@@ -471,6 +471,7 @@ async fn a_saved_tuning_is_used_at_load_and_noted() {
     queue_reply(&h.upstream, 2);
     save_tuning(&h, 20, 256).await;
     let result = h.state.load_model(&h.model_id, None, None).await.unwrap();
+    assert!(result.tuning_applied);
     let config = lock(&h.state.loaded).as_ref().unwrap().config.clone();
     assert_eq!((config.gpu_layers, config.ubatch_size), (20, 256));
     assert!(
@@ -488,6 +489,7 @@ async fn without_a_saved_tuning_nothing_is_claimed_as_tuned() {
     let h = harness(vec![FakeLaunch::hip()], 0, true).await;
     queue_reply(&h.upstream, 2);
     let result = h.state.load_model(&h.model_id, None, None).await.unwrap();
+    assert!(!result.tuning_applied);
     assert!(!result
         .rationale
         .iter()
@@ -510,6 +512,10 @@ async fn a_tuning_that_cannot_start_falls_back_to_the_untuned_setup() {
     queue_reply(&h.upstream, 2);
     save_tuning(&h, 20, 256).await;
     let result = h.state.load_model(&h.model_id, None, None).await.unwrap();
+    assert!(
+        !result.tuning_applied,
+        "fallback must not earn an optimized badge"
+    );
     assert_eq!(h.spawner.spawn_count(), 3);
     assert!(result.rationale.iter().any(|r| r.contains("did not start")));
     let config = lock(&h.state.loaded).as_ref().unwrap().config.clone();

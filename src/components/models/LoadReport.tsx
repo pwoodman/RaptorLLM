@@ -49,7 +49,7 @@ export function LoadReport() {
       <dl className="facts">
         <div>
           <dt>Config source</dt>
-          <dd>{report.rationale.some((note) => note.startsWith("Tuned on this machine"))
+          <dd>{report.tuning_applied === true
             ? "Optimized: saved speed settings applied for this model and runtime"
             : SOURCE_LABEL[report.config_source]}</dd>
         </div>
@@ -82,12 +82,12 @@ export function LoadReport() {
         </details>
       )}
 
-      <BenchmarkResult outcome={report.benchmark} />
+      <BenchmarkResult outcome={report.benchmark} optimized={report.tuning_applied === true} />
     </Panel>
   );
 }
 
-export function BenchmarkResult({ outcome }: { outcome: BenchmarkOutcome }) {
+export function BenchmarkResult({ outcome, optimized = false }: { outcome: BenchmarkOutcome; optimized?: boolean }) {
   const record = outcome.entry?.record ?? null;
   return (
     <section className="benchmark-result" aria-label="Benchmark result">
@@ -113,11 +113,11 @@ export function BenchmarkResult({ outcome }: { outcome: BenchmarkOutcome }) {
           </div>
           <div>
             <dt>Prompt speed</dt>
-            <dd>{formatTps(record.prompt_tps)}</dd>
+            <dd className={optimized ? "optimized-speed" : undefined}>{formatTps(record.prompt_tps)}</dd>
           </div>
           <div>
             <dt>Generation speed</dt>
-            <dd>{formatTps(record.gen_tps)}</dd>
+            <dd className={optimized ? "optimized-speed" : undefined}>{formatTps(record.gen_tps)}</dd>
           </div>
           <div>
             <dt>Status</dt>

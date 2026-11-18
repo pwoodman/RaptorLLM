@@ -16,7 +16,19 @@ The updater signing key is a long-lived trust anchor. The guided script reads `.
 
 Builds made before this updater was added cannot update themselves. Users on those builds must install the first updater-enabled release once from the GitHub Release page. Later versions can be checked and installed from Settings → About.
 
-The app never installs without an explicit user click. It checks for updates on demand, validates the signed metadata/package, downloads the selected release, then lets the Windows installer restart the app. If no update is found, the current version is shown.
+Users can check and install updates manually from Settings → About. Starting with 0.1.3,
+automatic idle updates are enabled by default and can be disabled there. While Raptor is open,
+it checks hourly and uses Windows session-wide keyboard/mouse inactivity to require at least
+five idle minutes before downloading an update. It verifies the signed package, displays a
+30-second postponable countdown, then rechecks OS inactivity and Raptor work before installing
+and restarting. Returning to the PC or starting work cancels the countdown. API requests,
+model operations, downloads, indexing, unsaved chat text and open dialogs postpone installation.
+Systems without supported OS idle detection keep manual installation available.
+
+The interaction follows [Microsoft Edge's idle-restart approach](https://support.microsoft.com/en-us/edge/automatically-update-microsoft-edge-when-your-device-is-idle),
+with an explicit idle threshold and Raptor-specific work guards. No scheduler is installed;
+the background checks run only while Raptor is open. The existing updater public key remains
+the trust anchor for both manual and automatic updates.
 
 ## Publish an existing locally signed build
 

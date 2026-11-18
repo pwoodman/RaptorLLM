@@ -10,6 +10,7 @@ import {
 } from "../api";
 import { chatStore, NEW_CHAT_TITLE, regenerate, sendMessage, updateParams } from "./chat";
 import { engineStore } from "./engine";
+import { loadOutcome } from "../test/fixtures";
 
 vi.mock("../api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../api")>();
@@ -68,6 +69,7 @@ beforeEach(() => {
       ...added.map((m, i) => ({
         ...stored(m.role, m.content, `m${saved.length + i}`),
         ...(m.reasoning ? { reasoning: m.reasoning } : {}),
+        ...(m.stats ? { stats: m.stats } : {}),
       })),
     ];
     return convWith(saved);
@@ -79,7 +81,7 @@ beforeEach(() => {
     };
   });
   vi.mocked(api.chat.start).mockResolvedValue(undefined);
-  engineStore.set({ status: engine({ state: "ready" }), statusError: null });
+  engineStore.set({ status: engine({ state: "ready" }), statusError: null, loadReport: null });
   chatStore.set({
     list: null,
     listProblems: [],
@@ -93,6 +95,17 @@ beforeEach(() => {
 });
 
 describe("sendMessage", () => {
+  it("saves the optimization status captured at generation start with the reply", async () => {
+    engineStore.set({ loadReport: loadOutcome({ tuning_applied: true }) });
+    const result = sendMessage("hello");
+    await vi.waitFor(() => expect(api.chat.start).toHaveBeenCalled());
+    engineStore.set({ loadReport: loadOutcome({ tuning_applied: false }) });
+    emit({ type: "chunk", text: "Optimized reply" });
+    emit({ type: "done", cancelled: false, stats: { tokens_per_second: 42 } });
+    await vi.waitFor(() => expect(chatStore.get().pending).toBeNull());
+    await result;
+    expect(saved[saved.length - 1]?.stats).toEqual({ tokens_per_second: 42, raptor_optimized: true });
+  });
   it("makes no request and shows no reply while the server is not running", async () => {
     engineStore.set({ status: engine({ state: "stopped" }) });
 

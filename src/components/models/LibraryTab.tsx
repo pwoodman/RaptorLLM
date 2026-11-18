@@ -126,7 +126,7 @@ export function LibraryTab() {
                     value={windows[entry.id] ?? null}
                     onChange={(o) => setWindows((w) => ({ ...w, [entry.id]: o }))}
                   />
-                  <TuneSpeed entry={entry} disabled={loaded !== null || busy !== null} prominent />
+                  <TuneSpeed entry={entry} disabled={busy !== null} prominent />
                   <ContextMatrix modelId={entry.id} disabled={loaded !== null || busy !== null} />
                   </details>
                 </div>

@@ -1,91 +1,33 @@
-import { useState } from "react";
 import { ArrowDownToLine, RefreshCw } from "lucide-react";
-import { check } from "@tauri-apps/plugin-updater";
 import { Notice } from "../Notice";
+import { useStore } from "../../hooks/useStore";
+import { appUpdatesStore, checkAppUpdates, installAppUpdate, setAutomaticUpdates } from "../../state/appUpdates";
 import pkg from "../../../package.json";
 
-type UpdateEvent =
-  | { event: "Started"; data: { contentLength?: number } }
-  | { event: "Progress"; data: { chunkLength: number } }
-  | { event: "Finished" };
-
 export function AppUpdates() {
-  const [checking, setChecking] = useState(false);
-  const [installing, setInstalling] = useState(false);
-  const [available, setAvailable] = useState<Awaited<ReturnType<typeof check>>>(null);
-  const [message, setMessage] = useState("");
-  const [error, setError] = useState("");
-  const [progress, setProgress] = useState<number | null>(null);
-
-  async function checkForUpdates() {
-    setChecking(true);
-    setError("");
-    setMessage("");
-    setProgress(null);
-    if (available) await available.close().catch(() => undefined);
-    setAvailable(null);
-    try {
-      const update = await check();
-      setAvailable(update);
-      setMessage(update ? `Version ${update.version} is available.` : "You're up to date.");
-    } catch (cause) {
-      const detail = cause instanceof Error ? cause.message : String(cause);
-      const isMissingFeed = /\b404\b|not found|no release found|valid release json/i.test(detail);
-      setError(isMissingFeed
-        ? "Update information is unavailable. The signed release feed may be missing or invalid. You can get the latest installer from GitHub Releases."
-        : `Couldn't reach the update service. Try again or get the latest installer from GitHub Releases. Details: ${detail}`);
-    } finally {
-      setChecking(false);
-    }
-  }
-
-  async function installUpdate() {
-    if (!available) return;
-    setInstalling(true);
-    setError("");
-    setMessage("Downloading update…");
-    setProgress(null);
-    let received = 0;
-    let totalBytes = 0;
-    try {
-      await available.downloadAndInstall((event: UpdateEvent) => {
-        if (event.event === "Started" && event.data?.contentLength) {
-          received = 0;
-          totalBytes = event.data.contentLength;
-          setProgress(0);
-        } else if (event.event === "Progress" && event.data?.chunkLength) {
-          received += event.data.chunkLength;
-          if (totalBytes) setProgress(Math.min(100, Math.round((received / totalBytes) * 100)));
-        } else if (event.event === "Finished") {
-          setMessage("Download complete. Starting the installer…");
-          setProgress(100);
-        }
-      });
-    } catch (cause) {
-      setError(`Update installation failed: ${cause instanceof Error ? cause.message : String(cause)}`);
-      setInstalling(false);
-    }
-  }
-
+  const state = useStore(appUpdatesStore, (s) => s);
+  const busy = ["checking", "downloading", "installing"].includes(state.phase);
   return (
     <section className="app-updates" aria-label="Application updates">
       <p>Version {pkg.version}. Updates are checked against signed GitHub Releases.</p>
-      {message && <Notice tone="success">{message}</Notice>}
-      {error && <Notice tone="danger">{error}</Notice>}
-      {error && (
-        <p><a href="https://github.com/pwoodman/RaptorLLM/releases" target="_blank" rel="noreferrer">Open GitHub Releases</a></p>
-      )}
-      {installing && <progress aria-label="Update download progress" max={100} value={progress ?? undefined} />}
-      {available?.body && <p className="muted small">{available.body}</p>}
+      <div className="toggle-row">
+        <div><label htmlFor="auto-updates" className="field-label">Update automatically while this PC is idle</label>
+          <p className="small muted">While Raptor is open, install signed updates after at least 5 minutes without keyboard or mouse activity. Raptor may restart. Active chats, API requests, model tasks, downloads and unsent messages delay installation.</p>
+        </div>
+        <input id="auto-updates" className="switch" type="checkbox" role="switch" checked={state.enabled} disabled={state.phase === "installing"} onChange={(event) => setAutomaticUpdates(event.target.checked)} />
+      </div>
+      {state.message && <Notice tone="info">{state.message}</Notice>}
+      {state.error && <Notice tone="danger">{state.error}</Notice>}
+      {state.error && <p><a href="https://github.com/pwoodman/RaptorLLM/releases" target="_blank" rel="noreferrer">Open GitHub Releases</a></p>}
+      {state.phase === "downloading" && <progress aria-label="Update download progress" max={100} value={state.progress ?? undefined} />}
+      {state.notes && <p className="small muted">{state.notes}</p>}
       <div className="button-row">
-        <button className="btn" onClick={checkForUpdates} disabled={checking || installing}>
-          <RefreshCw size={15} aria-hidden="true" /> {checking ? "Checking…" : "Check for updates"}
+        <button className="btn" onClick={() => void checkAppUpdates()} disabled={busy}>
+          <RefreshCw size={15} aria-hidden="true" /> {state.phase === "checking" ? "Checking…" : "Check for updates"}
         </button>
-        {available && (
-          <button className="btn btn-primary" onClick={installUpdate} disabled={installing}>
-            <ArrowDownToLine size={15} aria-hidden="true" /> {installing ? "Installing…" : `Install ${available.version}`}
-          </button>
-        )}
+        {state.version && <button className="btn btn-primary" onClick={() => void installAppUpdate()} disabled={busy}>
+          <ArrowDownToLine size={15} aria-hidden="true" /> {state.phase === "installing" ? "Installing…" : `Install ${state.version}`}
+        </button>}
       </div>
     </section>
   );

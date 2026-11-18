@@ -22,7 +22,7 @@ describe("LoadReport GPU memory", () => {
   afterEach(() => engineStore.set({ loadReport: null }));
 
   it("identifies saved optimization settings as the load source", () => {
-    engineStore.set({ loadReport: { ...outcome(null), rationale: ["Tuned on this machine: 30 layers on the GPU."] } });
+    engineStore.set({ loadReport: { ...outcome(null), tuning_applied: true, rationale: ["Tuned on this machine: 30 layers on the GPU."] } });
     render(<LoadReport />);
     expect(screen.getByText("Optimized: saved speed settings applied for this model and runtime")).toBeInTheDocument();
     expect(screen.queryByText(/no measured settings yet/)).not.toBeInTheDocument();

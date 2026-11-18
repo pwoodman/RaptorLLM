@@ -3,7 +3,8 @@ import { Download } from "lucide-react";
 import { api, runtimeInstallPreview, type AvailableRuntime, type RuntimeInstallPreview, type RuntimeSelectionView } from "../../api";
 import { messageOf } from "../../lib/errors";
 import { formatBytes } from "../../lib/format";
-import { refreshEngine } from "../../state/engine";
+import { runRuntimeSetup } from "../../state/runtimeSetup";
+import { RuntimeSetupProgress } from "../settings/RuntimeSetupProgress";
 import { ConfirmDialog } from "../ConfirmDialog";
 import { ErrorState, LoadingState } from "../AsyncState";
 import { Notice } from "../Notice";
@@ -26,28 +27,6 @@ export function InstallRuntime({ candidate = null, disabled = false, onInstalled
   const [error, setError] = useState<unknown>(null);
   const [preview, setPreview] = useState<RuntimeInstallPreview | null>(null);
   const [previewError, setPreviewError] = useState<string | null>(null);
-  const [written, setWritten] = useState(0);
-
-  // While installing, poll how many bytes have been written. It only reads a counter.
-  useEffect(() => {
-    if (!busy) {
-      setWritten(0);
-      return;
-    }
-    let current = true;
-    const timer = setInterval(() => {
-      api.runtime.installProgress().then(
-        (n) => {
-          if (current) setWritten(n);
-        },
-        () => undefined,
-      );
-    }, 500);
-    return () => {
-      current = false;
-      clearInterval(timer);
-    };
-  }, [busy]);
 
   // Read the preview each time the dialog opens, so the size and source are current.
   useEffect(() => {
@@ -72,9 +51,8 @@ export function InstallRuntime({ candidate = null, disabled = false, onInstalled
     setBusy(true);
     setError(null);
     try {
-      const selection = await api.runtime.ensure();
+      const selection = await runRuntimeSetup("Recommended model engine", preview?.download_bytes ?? null, () => api.runtime.ensure());
       setOpen(false);
-      await refreshEngine();
       onInstalled(selection);
     } catch (e) {
       setError(e);
@@ -122,36 +100,13 @@ export function InstallRuntime({ candidate = null, disabled = false, onInstalled
           </Notice>
         )}
         {previewError === null && preview === null && <LoadingState label="Reading the download details..." />}
-        {preview !== null && <PreviewFacts preview={preview} />}
-        {busy && <InstallProgress written={written} total={preview?.download_bytes ?? null} />}
+        {preview !== null && <details><summary className="small muted">Download details</summary><PreviewFacts preview={preview} /></details>}
+        {busy && <RuntimeSetupProgress />}
 
         <p className="small">
-          The download source is the runtime index in config/runtime-manifest.json. Each file is checked against its
-          published SHA-256 before it is used.
+          Raptor downloads the files, checks them, and completes setup for you.
         </p>
       </ConfirmDialog>
-    </div>
-  );
-}
-
-function InstallProgress({ written, total }: { written: number; total: number | null }) {
-  const done = total !== null && total > 0 && written >= total;
-  const text =
-    written === 0
-      ? "Starting the download..."
-      : done
-        ? "Downloaded. Verifying the checksum and extracting..."
-        : total !== null && total > 0
-          ? `Downloaded ${formatBytes(written)} of ${formatBytes(total)}`
-          : `Downloaded ${formatBytes(written)}`;
-  return (
-    <div className="install-progress" role="status">
-      {total !== null && total > 0 ? (
-        <progress max={total} value={Math.min(written, total)} aria-label="Runtime download progress" />
-      ) : (
-        <progress aria-label="Runtime download progress" />
-      )}
-      <p className="small">{text}</p>
     </div>
   );
 }

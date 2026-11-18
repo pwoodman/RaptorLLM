@@ -1,5 +1,6 @@
 import { Boxes, MessageSquare, Settings, type LucideIcon } from "lucide-react";
 import { useStore } from "../hooks/useStore";
+import { CurrentOptimizationBadge } from "./models/OptimizationBadge";
 import { engineStore } from "../state/engine";
 import { uiStore, type Page } from "../state/ui";
 import { verdictSummary } from "./GpuVerdictView";
@@ -62,10 +63,11 @@ export function Sidebar() {
           {loaded ? loaded.modelId.split("/").pop() : serverState === "ready" ? "Model not reported" : "No model loaded"}
         </div>
         {backend !== null && <div className="muted small">{backendLabel(backend)} runtime</div>}
+        <CurrentOptimizationBadge />
         <div className={`runtime-verdict tone-${verdict.tone}`}>{verdict.label}</div>
         {loadRecord != null && (
           <div
-            className="muted small"
+            className={`small ${loadReport?.tuning_applied ? "optimized-speed" : "muted"}`}
             title={`Measured after load: ${loadRecord.prompt_tps.toFixed(1)} prompt tokens/s; ${loadRecord.gen_tps.toFixed(1)} generation tokens/s; ${Math.round(loadRecord.ttft_ms)} ms to first token`}
           >
             {loadRecord.gen_tps.toFixed(1)} tok/s · {Math.round(loadRecord.ttft_ms)} ms first token

@@ -18,7 +18,7 @@ const nsis = await platform("nsis", `Raptor LLM_${version}_x64-setup.exe`);
 const msi = await platform("msi", `Raptor LLM_${version}_x64_en-US.msi`);
 const manifest = {
   version,
-  notes: "Automatic local model registration, reliable saved speed settings, light/dark and glass preferences, and separate settings screens.",
+  notes: "Faster quick tuning with benchmark cleanup, one-time Optimize & chat with Skip, Raptor Optimized badges and speed colors, clearer dependency setup progress and retry, and signed updates after 5 minutes of PC idle time with a postponable countdown.",
   pub_date: new Date().toISOString(),
   platforms: { "windows-x86_64": nsis, "windows-x86_64-nsis": nsis, "windows-x86_64-msi": msi },
 };

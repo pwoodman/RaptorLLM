@@ -3,6 +3,10 @@ import { Notice } from "./components/Notice";
 import { ShortcutsDialog } from "./components/ShortcutsDialog";
 import { CpuFallbackBanner } from "./components/models/CpuFallbackBanner";
 import { Sidebar } from "./components/Sidebar";
+import { FirstLoadOptimization } from "./components/models/FirstLoadOptimization";
+import { IdleUpdateNotice } from "./components/settings/IdleUpdateNotice";
+import { startIdleUpdates } from "./state/appUpdates";
+import { RuntimeSetupProgress } from "./components/settings/RuntimeSetupProgress";
 import { useGlobalShortcuts } from "./hooks/useGlobalShortcuts";
 import { useStore } from "./hooks/useStore";
 import ChatsPage from "./pages/Chats";
@@ -24,6 +28,7 @@ export default function App() {
   const [helpOpen, setHelpOpen] = useState(false);
 
   useEffect(() => startSync(), []);
+  useEffect(() => startIdleUpdates(), []);
   useGlobalShortcuts({ onShowHelp: () => setHelpOpen(true) });
 
   return (
@@ -34,6 +39,9 @@ export default function App() {
       <Sidebar />
       <main id="main" className={`main ${page === "chats" ? "main-fill" : ""}`} tabIndex={-1}>
         <CpuFallbackBanner />
+        <FirstLoadOptimization />
+        <IdleUpdateNotice />
+        <RuntimeSetupProgress onlyWhileRunning />
         {flash !== null && (
           <div className="flash">
             <Notice

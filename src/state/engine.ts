@@ -9,6 +9,9 @@ import {
 } from "../api";
 import { messageOf } from "../lib/errors";
 import { createStore } from "./store";
+import { libraryStore } from "./library";
+import { offerFirstLoadOptimization, rememberOptimizationOffer } from "./firstLoad";
+import { tuningStore } from "./tuning";
 
 /** What this session loaded. The backend does not report the loaded model's id in EngineStatus. */
 export interface LoadedModel {
@@ -19,6 +22,8 @@ export interface LoadedModel {
   plannedGpuLayers: number | null;
   rationale: string[];
   estimate: MemoryEstimate | null;
+  preset?: string | null;
+  window?: LoadWindow | null;
 }
 
 export interface EngineState {
@@ -31,7 +36,7 @@ export interface EngineState {
    * Null after unload, a stop, or a refused load.
    */
   loadReport: LoadModelOutcome | null;
-  busy: "loading" | "unloading" | "optimizing" | null;
+  busy: "preparing" | "loading" | "unloading" | "optimizing" | "installing" | null;
 }
 
 export const engineStore = createStore<EngineState>({
@@ -81,7 +86,7 @@ export async function refreshEngine(): Promise<void> {
       }
     }
     // A load in this window sets its own state when it finishes; do not overwrite it mid-load.
-    if (engineStore.get().busy === "loading") {
+    if (engineStore.get().busy !== null) {
       engineStore.set({ status, gateway, statusError: null });
       return;
     }
@@ -127,8 +132,25 @@ export async function loadModel(
   preset: string | null = null,
   window: LoadWindow | null = null,
 ): Promise<void> {
-  engineStore.set({ busy: "loading" });
+  if (engineStore.get().busy !== null) throw new Error("Wait for the current model task to finish.");
+  engineStore.set({ busy: "preparing" });
   try {
+    const entry = libraryStore.get().models?.find((model) => model.id === modelId);
+    if (entry && await offerFirstLoadOptimization(entry)) {
+      engineStore.set({ busy: "optimizing" });
+      // Optimize & chat includes replacing the currently running model, just like a normal load.
+      const status = await api.models.unload();
+      engineStore.set({ status, loaded: null, loadReport: null });
+      tuningStore.set({ activeId: modelId, startedAt: Date.now() });
+      try {
+        const report = await api.models.tune(modelId, false);
+        tuningStore.set((state) => ({ reports: { ...state.reports, [modelId]: report } }));
+        rememberOptimizationOffer(entry);
+      } finally {
+        tuningStore.set({ activeId: null, startedAt: null });
+      }
+    }
+    engineStore.set({ busy: "loading" });
     const result = await modelsLoadWithPreset(
       modelId,
       window?.ctx ?? null,
@@ -147,6 +169,8 @@ export async function loadModel(
       loadReport: result,
       loaded: {
         modelId,
+        preset,
+        window,
         ctxSize: report?.ctx_size ?? plan?.config.ctx_size ?? null,
         plannedGpuLayers: report?.gpu_layers ?? plan?.config.gpu_layers ?? null,
         rationale: result.rationale,

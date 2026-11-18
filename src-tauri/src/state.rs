@@ -7,6 +7,7 @@ use crate::adapters::{
     ServerProbe,
 };
 use crate::conversations::ConversationStore;
+use crate::job::JobCommandRunner;
 use crate::job::JobSpawner;
 use crate::perf::{self, BenchmarkOutcome, KnownGood, PerfComparison, PerfEntry};
 use crate::semantic::{ActiveModel, ActiveServer, LlamaHttp, LoopbackHttp, SemanticSetup};
@@ -30,7 +31,7 @@ use raptor_runtime::install::ReqwestFetcher;
 use raptor_runtime::manifest::{parse_manifest_index, select_runtime, Backend, Manifest};
 use raptor_runtime::perfmem::{BenchRecord, ConfigSnapshot, PerfStore};
 use raptor_runtime::process::{FileLogSink, RestartPolicy, ServerState, Timing};
-use raptor_runtime::sys::{CommandRunner, SystemCommandRunner, TcpPortCheck};
+use raptor_runtime::sys::{CommandRunner, TcpPortCheck};
 use raptor_runtime::tokenizer::{LoopbackTransport, TokenizeTransport};
 use raptor_runtime::{EngineDeps, EngineStatus, RuntimeEngine, RuntimeSummary};
 use serde::Serialize;
@@ -100,6 +101,8 @@ pub enum ConfigSource {
 /// Result of a successful model load.
 #[derive(Debug, Clone, Serialize)]
 pub struct LoadModelResult {
+    /// A saved profile was used by the successful launch, without automatic or CPU fallback.
+    pub tuning_applied: bool,
     /// Includes the GPU verdict. A GPU build that is not verified is reported as such.
     pub status: EngineStatus,
     /// Why this configuration was chosen, in plain words.
@@ -436,7 +439,7 @@ impl ShellDeps {
             llama_http: Arc::new(LoopbackHttp),
             install_progress,
             gpu_memory: Arc::new(raptor_runtime::gpumem::WindowsGpuMemory::new(Arc::new(
-                SystemCommandRunner,
+                JobCommandRunner,
             ))),
         })
     }
@@ -924,6 +927,18 @@ impl AppState {
         gateway_status(&g)
     }
 
+    /// An updater must not restart a model operation or an active/queued API request.
+    pub async fn update_work_active(&self) -> bool {
+        if self.runtime_lock.try_lock().is_err() {
+            return true;
+        }
+        let gateway = self.gateway.lock().await;
+        gateway.handle.as_ref().is_some_and(|handle| {
+            let metrics = handle.metrics();
+            metrics.running > 0 || metrics.queued > 0
+        })
+    }
+
     /// Where the gateway's self-signed certificate is kept.
     pub fn gateway_tls_dir(&self) -> PathBuf {
         self.dirs.config().join(GATEWAY_TLS_DIR)
@@ -1340,6 +1355,7 @@ impl AppState {
             {
                 rationale.retain(|note| !note.starts_with("Tuned on this machine"));
                 rationale.push("Saved speed settings could not start. This load uses the automatic fallback; your saved profile is still kept.".into());
+                tuned_applied = false;
             }
         }
         if config.ctx_size < crate::settings::MIN_CONTEXT_TARGET {
@@ -1408,6 +1424,7 @@ impl AppState {
         let benchmark = self.benchmark(&loaded).await;
         let thinking = self.refresh_thinking().await;
         let result = LoadModelResult {
+            tuning_applied: tuned_applied && !cpu_fallback,
             status: self.runtime.status(),
             rationale,
             estimate,
@@ -1640,7 +1657,10 @@ impl AppState {
     /// that depth is reported; if none works, only the quick-tune result is saved.
     pub async fn tune_model(&self, model_id: &str, deep: bool) -> Result<TuneReport> {
         use std::sync::atomic::Ordering::Relaxed;
-        let _guard = self.runtime_lock.lock().await;
+        self.restore_installed_runtime().await?;
+        let _guard = self.runtime_lock.try_lock().map_err(|_| {
+            RaptorError::Conflict("Another model or runtime task is still running. Wait for it to finish, then optimize again.".into())
+        })?;
         if self.runtime.status().server.state != ServerState::Stopped {
             return Err(RaptorError::Conflict(
                 "unload the model before tuning: the benchmark needs the GPU".into(),
@@ -2641,7 +2661,7 @@ fn finished_view(
 /// Engine dependencies for the real system. llama-server runs under [`JobSpawner`], so it
 /// cannot outlive the app; the log file is written next to the other data.
 fn system_engine_deps(dirs: &DataDirs, progress: Arc<AtomicU64>) -> Result<EngineDeps> {
-    let runner: Arc<dyn CommandRunner> = Arc::new(SystemCommandRunner);
+    let runner: Arc<dyn CommandRunner> = Arc::new(JobCommandRunner);
     let sink = FileLogSink::rolling(&dirs.logs())?;
     Ok(EngineDeps {
         probe: Arc::new(SystemProbe::new(runner.clone())),

@@ -16,6 +16,7 @@
   --warn: #f0b75a;
   --danger: #f07a7a;
   --focus: #8fe9ff;
+  --optimized: #c3a3ff;
   --radius: 10px;
   --mono: 'DM Mono', ui-monospace, Consolas, monospace;
   font-family: Manrope, Inter, system-ui, sans-serif;
@@ -452,6 +453,7 @@ kbd { font: 12px var(--mono); border: 1px solid var(--border); border-bottom-wid
 
 /* Appearance is applied before React renders, including after a restart. */
 :root[data-theme="light"] {
+  --optimized: #7139b5;
   color-scheme: light;
   --bg: #f3f6fa;
   --panel: #ffffff;
@@ -499,3 +501,22 @@ kbd { font: 12px var(--mono); border: 1px solid var(--border); border-bottom-wid
 .saved-tuning { border-left: 2px solid var(--ok); padding: 8px 12px; margin-top: 8px; }
 .model-options { width: 100%; }
 .model-options[open] { display: grid; gap: 10px; }
+
+.optimization-badge { display: inline-flex; align-items: center; gap: 5px; width: fit-content; padding: 4px 9px; border: 1px solid color-mix(in srgb, var(--optimized) 55%, transparent); border-radius: 999px; background: linear-gradient(110deg, color-mix(in srgb, var(--optimized) 17%, var(--panel)), color-mix(in srgb, var(--accent) 9%, var(--panel))); color: var(--optimized); font-size: 10px; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; box-shadow: 0 0 16px color-mix(in srgb, var(--optimized) 12%, transparent), inset 0 1px 0 #ffffff12; white-space: nowrap; }
+.optimization-standard { display: inline-flex; align-items: center; padding: 3px 8px; border: 1px solid var(--border); border-radius: 999px; color: var(--muted); font-size: 10px; letter-spacing: .04em; text-transform: uppercase; white-space: nowrap; }
+.optimized-speed { color: var(--optimized); font-weight: 700; text-shadow: 0 0 16px color-mix(in srgb, var(--optimized) 25%, transparent); }
+.reply-speed { display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.optimization-intro { display: flex; gap: 12px; align-items: center; color: var(--optimized); padding: 12px; border-radius: 10px; background: color-mix(in srgb, var(--optimized) 10%, var(--panel)); }
+.optimization-intro svg { flex-shrink: 0; }
+.optimization-run { margin: 12px 20px; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 14px 18px; border: 1px solid color-mix(in srgb, var(--optimized) 45%, var(--border)); border-radius: 12px; color: var(--optimized); background: color-mix(in srgb, var(--optimized) 8%, var(--panel)); }
+.optimization-run progress { flex: 1; min-width: 100px; accent-color: var(--optimized); }
+.idle-update-notice { margin: 12px 20px; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 14px 18px; border: 1px solid var(--accent); border-radius: 12px; background: var(--panel); color: var(--text); }
+.idle-update-notice > div { flex: 1; min-width: 220px; }
+.runtime-setup-progress { margin: 8px 0; padding: 14px 16px; border: 1px solid var(--border-strong); border-radius: 10px; background: var(--panel-2); display: grid; gap: 10px; }
+.main > .runtime-setup-progress { margin: 12px 20px; }
+.setup-progress-title { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; color: var(--accent); }
+.install-steps { list-style: none; display: flex; gap: 8px; flex-wrap: wrap; margin: 0; padding: 0; font-size: 11px; color: var(--muted); }
+.install-steps li { padding: 4px 7px; border-radius: 5px; border: 1px solid var(--border); }
+.install-steps li[aria-current="step"] { color: var(--accent); border-color: var(--accent); background: var(--panel); font-weight: 700; }
+.install-steps li.done { color: var(--ok); }
+.runtime-setup-progress progress { width: 100%; accent-color: var(--accent); }

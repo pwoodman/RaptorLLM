@@ -10,6 +10,7 @@ import { GpuVerdictView } from "../GpuVerdictView";
 import { Notice } from "../Notice";
 import { LoadProgressBar } from "./LoadProgressBar";
 import { Panel } from "../Panel";
+import { CurrentOptimizationBadge } from "./OptimizationBadge";
 
 export function LoadedModelPanel() {
   const status = useStore(engineStore, (s) => s.status);
@@ -69,7 +70,7 @@ export function LoadedModelPanel() {
             <>
               <div>
                 <dt>Model</dt>
-                <dd className="break">{name}</dd>
+                <dd className="break">{name} <CurrentOptimizationBadge /></dd>
               </div>
               <div>
                 <dt>Planned context</dt>

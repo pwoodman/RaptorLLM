@@ -56,6 +56,7 @@ export interface PendingReply {
   error: string | null;
   chunks: number;
   firstChunkAt: number | null;
+  raptorOptimized?: boolean;
 }
 
 export interface ChatState {
@@ -297,6 +298,7 @@ async function runGeneration(conversationId: string, messages: StoredMessage[], 
       error: null,
       chunks: 0,
       firstChunkAt: null,
+      raptorOptimized: engineStore.get().loadReport?.tuning_applied === true,
     },
   });
 
@@ -400,7 +402,7 @@ async function persistReply(
       role: "assistant" as const,
       content: text,
       ...(reasoning.trim() !== "" ? { reasoning } : {}),
-      ...(stats ? { stats } : {}),
+      ...(stats || pending.raptorOptimized ? { stats: { ...stats, raptor_optimized: pending.raptorOptimized === true } } : {}),
     };
     const conv = await api.conversations.append(conversationId, [saved]);
     applyConversation(conv);

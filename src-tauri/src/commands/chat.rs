@@ -657,7 +657,12 @@ mod tests {
         let plan_q = bodies[0]["messages"][0]["content"].as_str().unwrap();
         assert!(plan_q.starts_with("Write a story") && plan_q.ends_with("No other text."));
         assert_eq!(bodies[0]["max_tokens"], crate::sections::PLAN_MAX_TOKENS);
-        for (i, b) in bodies[1..].iter().enumerate() {
+        // Parallel requests can reach the fake in either order. Check both section requests
+        // independently of scheduling; the assembled response is asserted above.
+        let mut section_bodies: Vec<_> = bodies[1..].iter().collect();
+        section_bodies
+            .sort_by_key(|body| body["messages"][2]["content"].as_str().unwrap().to_owned());
+        for (i, b) in section_bodies.iter().enumerate() {
             let m = b["messages"].as_array().unwrap();
             assert_eq!(m.len(), 3);
             assert_eq!(

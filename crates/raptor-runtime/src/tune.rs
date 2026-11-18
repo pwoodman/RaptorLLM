@@ -33,10 +33,10 @@ pub const DEEP_DEPTH: u32 = 16_384;
 /// A model that cannot be benchmarked in this long is reported as failed, not waited on forever.
 const BENCH_TIMEOUT: Duration = Duration::from_secs(20 * 60);
 
-/// Existing context tokens needed so the measured prompt and generated reply reach the effective
-/// window used by the app.
-fn bench_depth(context_size: u32) -> u32 {
-    context_size.saturating_sub(BENCH_PROMPT_TOKENS + BENCH_REPLY_TOKENS)
+/// A quick sweep starts with an empty context. Prefilling the user's entire context window
+/// for every repeat turns a quick tune into hours of work. Deep tuning is an explicit pass.
+fn bench_depth(_context_size: u32) -> u32 {
+    0
 }
 
 #[cfg(windows)]
@@ -182,8 +182,7 @@ pub async fn measure(
         .map(u32::to_string)
         .collect::<Vec<_>>()
         .join(",");
-    // Match the requested effective window while leaving room for the measured prompt and reply.
-    // llama-bench exposes existing context through -d rather than -c.
+    // Use a short representative prompt; reserve existing-context work for measure_depth.
     let depth = bench_depth(context_size);
     let cache = kv_cache.llama_arg();
     let args: Vec<String> = [
@@ -383,8 +382,9 @@ mod tests {
     }
 
     #[test]
-    fn quick_tune_depth_reserves_the_same_prompt_and_reply_inside_the_effective_context() {
-        assert_eq!(bench_depth(65_536), 63_424);
+    fn quick_tune_never_prefills_the_entire_requested_context_window() {
+        assert_eq!(bench_depth(65_536), 0);
+        assert_eq!(bench_depth(200_000), 0);
         assert_eq!(bench_depth(BENCH_PROMPT_TOKENS + BENCH_REPLY_TOKENS), 0);
         assert_eq!(bench_depth(1024), 0);
     }
@@ -439,7 +439,7 @@ mod tests {
             Path::new("C:/rt/llama-bench.exe"),
             Path::new("C:/m.gguf"),
             41,
-            BENCH_PROMPT_TOKENS + BENCH_REPLY_TOKENS,
+            65_536,
             crate::config::KvCacheType::Q4_0,
             true,
             &env,

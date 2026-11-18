@@ -99,6 +99,7 @@ export function Composer({ blockedReason }: { blockedReason: string | null }) {
 
   return (
     <form
+      data-unsaved-work={draft.trim() !== "" || attachments.length > 0 || reading ? "true" : undefined}
       className={`composer ${dragging ? "composer-drop" : ""}`}
       onSubmit={(e: FormEvent) => {
         e.preventDefault();

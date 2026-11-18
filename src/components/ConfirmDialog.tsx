@@ -5,6 +5,7 @@ interface ConfirmDialogProps {
   title: string;
   children: ReactNode;
   confirmLabel: string;
+  cancelLabel?: string;
   tone?: "default" | "danger";
   busy?: boolean;
   /** Blocks the confirm button, for example while the facts it confirms have not loaded. */
@@ -22,6 +23,7 @@ export function ConfirmDialog({
   title,
   children,
   confirmLabel,
+  cancelLabel = "Cancel",
   tone = "default",
   busy = false,
   confirmDisabled = false,
@@ -81,7 +83,7 @@ export function ConfirmDialog({
         </div>
         <div className="modal-actions">
           <button ref={cancelRef} type="button" className="btn" onClick={onCancel} disabled={busy}>
-            Cancel
+            {cancelLabel}
           </button>
           <button
             type="button"

@@ -3,7 +3,9 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ModelEntry, TuneReport } from "../../api";
 
-const mocks = vi.hoisted(() => ({ tune: vi.fn(), progress: vi.fn(), forget: vi.fn(), saved: vi.fn() }));
+const mocks = vi.hoisted(() => ({ tune: vi.fn(), progress: vi.fn(), forget: vi.fn(), saved: vi.fn(), unload: vi.fn(), load: vi.fn() }));
+
+vi.mock("../../state/engine", async (original) => ({ ...await original<typeof import("../../state/engine")>(), loadModel: mocks.load }));
 
 vi.mock("../../api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../api")>();
@@ -11,13 +13,15 @@ vi.mock("../../api", async (importOriginal) => {
     ...actual,
     api: {
       ...actual.api,
-      models: { ...actual.api.models, tune: mocks.tune, tuneProgress: mocks.progress, forgetTuning: mocks.forget, savedTuning: mocks.saved },
+      models: { ...actual.api.models, tune: mocks.tune, tuneProgress: mocks.progress, forgetTuning: mocks.forget, savedTuning: mocks.saved, unload: mocks.unload },
     },
   };
 });
 
 import { longTuneSummary, tps, TuneSpeed, tuneSummary } from "./TuneSpeed";
 import { tuningStore } from "../../state/tuning";
+import { engineStore } from "../../state/engine";
+import { chatStore } from "../../state/chat";
 
 const entry = { id: "local/o.gguf", file_name: "o.gguf" } as ModelEntry;
 
@@ -80,9 +84,14 @@ describe("longTuneSummary", () => {
 
 describe("TuneSpeed", () => {
   beforeEach(() => {
+    engineStore.set({ busy: null, loaded: null, status: null });
+    chatStore.set({ pending: null });
     tuningStore.set({ activeId: null, reports: {} });
     mocks.tune.mockReset();
     mocks.saved.mockResolvedValue([]);
+    mocks.unload.mockResolvedValue({ server: { state: { state: "stopped" } } });
+    mocks.load.mockReset();
+    mocks.load.mockResolvedValue(undefined);
     mocks.progress.mockResolvedValue({ done: 0, total: 0 });
   });
 
@@ -128,9 +137,22 @@ describe("TuneSpeed", () => {
     expect(mocks.forget).toHaveBeenCalledWith(entry.id);
   });
 
-  it("is unavailable while a model is loaded", () => {
+  it("respects a disabled state while another model task is running", () => {
     render(<TuneSpeed entry={entry} disabled />);
     expect(screen.getByRole("button", { name: /Optimize speed/ })).toBeDisabled();
+  });
+
+  it("unloads a running model and resumes it with the same chat settings after tuning", async () => {
+    const window = { ctx: 32768, cacheType: "q8_0" as const, slots: 1, speculation: false };
+    engineStore.set({ loaded: { modelId: entry.id, ctxSize: window.ctx, plannedGpuLayers: 30, rationale: [], estimate: null, preset: "coding", window } });
+    mocks.tune.mockResolvedValue(report());
+    render(<TuneSpeed entry={entry} disabled={false} />);
+    await userEvent.click(screen.getByRole("button", { name: /Optimize speed/ }));
+    await userEvent.click(screen.getByRole("button", { name: "Start tuning" }));
+    await waitFor(() => expect(mocks.load).toHaveBeenCalledWith(entry.id, "coding", window));
+    const unloadCalls = mocks.unload.mock.invocationCallOrder;
+    const tuneCalls = mocks.tune.mock.invocationCallOrder;
+    expect(unloadCalls[unloadCalls.length - 1]).toBeLessThan(tuneCalls[tuneCalls.length - 1]);
   });
 
   it("keeps an optimization visible when leaving and reopening the page", async () => {

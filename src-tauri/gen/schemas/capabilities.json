@@ -1,1 +1,1 @@
-{"default":{"identifier":"default","description":"Main window: app commands and event listening","local":true,"windows":["main"],"permissions":["core:default","updater:allow-check","updater:allow-download-and-install"]}}
+{"default":{"identifier":"default","description":"Main window: app commands and event listening","local":true,"windows":["main"],"permissions":["core:default","updater:allow-check","updater:allow-download-and-install","updater:allow-download","updater:allow-install"]}}

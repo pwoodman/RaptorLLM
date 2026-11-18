@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 import { Gauge } from "lucide-react";
 import { api, type ModelEntry, type TuneReport, type SavedTuning } from "../../api";
-import { engineStore } from "../../state/engine";
+import { engineStore, loadModel } from "../../state/engine";
+import { chatStore } from "../../state/chat";
 import { tuningStore } from "../../state/tuning";
 import { useStore } from "../../hooks/useStore";
 import { messageOf } from "../../lib/errors";
@@ -54,6 +55,8 @@ export function longTuneSummary(r: TuneReport): string | null {
  */
 export function TuneSpeed({ entry, disabled, onRunningChange, prominent = false }: { entry: ModelEntry; disabled: boolean; onRunningChange?: (running: boolean) => void; prominent?: boolean }) {
   const running = useStore(tuningStore, (s) => s.activeId === entry.id);
+  const startedAt = useStore(tuningStore, (s) => s.startedAt);
+  const pending = useStore(chatStore, (s) => s.pending);
   const report = useStore(tuningStore, (s) => s.reports[entry.id] ?? null);
   const setReport = (next: TuneReport | null) => tuningStore.set((s) => ({ reports: { ...s.reports, [entry.id]: next } }));
   const [saved, setSaved] = useState<SavedTuning[]>([]);
@@ -93,20 +96,32 @@ export function TuneSpeed({ entry, disabled, onRunningChange, prominent = false 
   }, [running]);
 
   async function start() {
+    if (engineStore.get().busy !== null || chatStore.get().pending !== null) return;
     setAsking(false);
-    tuningStore.set({ activeId: entry.id });
+    const previous = engineStore.get().loaded;
+    const resumeChat = previous?.modelId === entry.id;
+    tuningStore.set({ activeId: entry.id, startedAt: Date.now() });
     engineStore.set({ busy: "optimizing" });
     onRunningChange?.(true);
     setError(null);
     setReport(null);
     try {
+      if (engineStore.get().loaded || (engineStore.get().status && engineStore.get().status?.server.state.state !== "stopped")) {
+        const status = await api.models.unload();
+        engineStore.set({ status, loaded: null, loadReport: null });
+      }
       setReport(await api.models.tune(entry.id, deep));
       try { setSaved(await api.models.savedTuning(entry.id)); setSavedError(false); }
       catch { setSavedError(true); }
+      if (resumeChat) {
+        tuningStore.set({ activeId: null, startedAt: null });
+        engineStore.set({ busy: null });
+        await loadModel(entry.id, previous?.preset ?? null, previous?.window ?? null);
+      }
     } catch (e) {
       setError(messageOf(e));
     } finally {
-      tuningStore.set({ activeId: null });
+      tuningStore.set({ activeId: null, startedAt: null });
       engineStore.set({ busy: null });
       onRunningChange?.(false);
     }
@@ -129,8 +144,8 @@ export function TuneSpeed({ entry, disabled, onRunningChange, prominent = false 
       <button
         type="button"
         className={prominent ? "btn btn-primary" : "btn btn-ghost btn-sm"}
-        disabled={disabled || running || resetting}
-        title={disabled && !running ? "Unload the model first: tuning needs the GPU" : "Find the fastest settings for this model"}
+        disabled={disabled || running || resetting || pending !== null}
+        title={pending ? "Finish the current reply first" : disabled && !running ? "Wait for the current model task to finish" : "Find the fastest settings for this model"}
         onClick={() => setAsking(true)}
       >
         <Gauge size={13} aria-hidden="true" /> {running ? "Tuning..." : "Optimize speed"}
@@ -143,7 +158,7 @@ export function TuneSpeed({ entry, disabled, onRunningChange, prominent = false 
             value={progress && progress.total > 0 ? progress.done : undefined}
           />
           <p className="small muted">
-            Measuring{progress && progress.total > 0 ? ` (${progress.done} of ${progress.total} benchmark steps done)` : ""}. This
+            Testing{progress && progress.total > 0 ? ` setup ${Math.min(progress.done + 1, progress.total)} of ${progress.total}` : " the first setup"}{startedAt ? ` · ${Math.floor((Date.now() - startedAt) / 1000)} s elapsed` : ""}. This
             takes {deep ? "several minutes, longer than a quick tune" : "a few minutes"}. Keep the app open.
           </p>
         </div>
@@ -219,7 +234,7 @@ export function TuneSpeed({ entry, disabled, onRunningChange, prominent = false 
                 </p>
               ) : (
                 <p className="muted small">
-                  Prompt and generation use 3 llama-bench repeats at {report.context_size?.toLocaleString() ?? "the selected"} context, with the same cache and flash-attention mode as the default load, a 2,048-token prompt and 64-token reply. TTFT needs a live
+                  The quick sweep uses 3 llama-bench repeats from an empty context, with the same cache and flash-attention mode as the default load, a 2,048-token prompt and 64-token reply. Long-context testing is a separate opt-in pass. TTFT needs a live
                   streamed comparison and was not measured for this run; llama-bench does not report it. The default/optimized
                   request-time estimate is {report.baseline.seconds.toFixed(1)} s / {report.best.seconds.toFixed(1)} s
                   ({Math.round(report.improvement_percent)}% faster by the tuning score).
@@ -267,6 +282,7 @@ export function TuneSpeed({ entry, disabled, onRunningChange, prominent = false 
           Raptor will try a few setups and save the fastest for this model on your PC. This takes a few minutes.
           Keep Raptor open and pause other GPU-heavy work. When it finishes, load your model as usual; compatible saved
           settings apply automatically.
+          Any loaded model is unloaded for the test. If this is the model you were using, Raptor loads it again when tuning finishes.
         </p>
         <label className="small">
           <input type="checkbox" checked={deep} onChange={(e) => setDeep(e.target.checked)} /> Also tune for long

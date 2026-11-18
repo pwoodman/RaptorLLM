@@ -64,17 +64,52 @@ impl CommandRunner for SystemCommandRunner {
         env: &[(String, String)],
         timeout: Duration,
     ) -> Result<String> {
+        self.run_with_spawn_hook(program, args, env, timeout, |_| Ok(()))
+            .await
+    }
+}
+
+impl SystemCommandRunner {
+    /// Lets the desktop host place helper processes in its lifetime-managed job immediately
+    /// after spawn, so benchmarks cannot survive a closed or crashed app.
+    pub async fn run_with_spawn_hook(
+        &self,
+        program: &str,
+        args: &[String],
+        env: &[(String, String)],
+        timeout: Duration,
+        on_spawn: fn(u32) -> Result<()>,
+    ) -> Result<String> {
         let mut cmd = tokio::process::Command::new(program);
         cmd.args(args)
             .envs(env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
             .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
             .kill_on_drop(true);
         #[cfg(windows)]
         {
             // CREATE_NO_WINDOW: never flash a console window from the GUI.
             cmd.creation_flags(0x0800_0000);
         }
-        let output = tokio::time::timeout(timeout, cmd.output())
+        let mut child = cmd
+            .spawn()
+            .map_err(|e| RaptorError::Runtime(format!("cannot run {program}: {e}")))?;
+        let assigned = match child.id() {
+            Some(pid) => on_spawn(pid),
+            None => Err(RaptorError::Runtime(format!(
+                "{program} started without a process id"
+            ))),
+        };
+        if let Err(error) = assigned {
+            // A very short probe may have already exited before the host opens its process
+            // handle. It cannot be orphaned, so preserve its real output in that case.
+            if child.try_wait().ok().flatten().is_none() {
+                let _ = child.kill().await;
+                return Err(error);
+            }
+        }
+        let output = tokio::time::timeout(timeout, child.wait_with_output())
             .await
             .map_err(|_| RaptorError::Runtime(format!("{program} timed out after {timeout:?}")))?
             .map_err(|e| RaptorError::Runtime(format!("cannot run {program}: {e}")))?;

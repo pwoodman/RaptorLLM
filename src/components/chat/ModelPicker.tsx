@@ -6,6 +6,7 @@ import { libraryStore } from "../../state/library";
 import { uiStore } from "../../state/ui";
 import { LoadFailureCard } from "../models/LoadFailureCard";
 import { Notice } from "../Notice";
+import { CurrentOptimizationBadge } from "../models/OptimizationBadge";
 
 const UNKNOWN_OPTION = "__loaded_unknown__";
 
@@ -63,6 +64,8 @@ export function ModelPicker() {
           </option>
         ))}
       </select>
+      <CurrentOptimizationBadge />
+      {busy === "optimizing" && <span className="small optimized-speed">Optimizing before chat…</span>}
       {busy === "loading" && <span className="muted small">Loading model...</span>}
       {busy === "unloading" && <span className="muted small">Unloading...</span>}
       {libraryError !== null && (

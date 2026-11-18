@@ -8,6 +8,7 @@ import { EmptyState } from "../AsyncState";
 import { LazyMarkdown } from "../markdown/LazyMarkdown";
 import { Notice } from "../Notice";
 import { ThinkingBlock } from "./ThinkingBlock";
+import { OptimizationBadge } from "../models/OptimizationBadge";
 
 const ROLE_LABEL: Record<StoredMessage["role"], string> = {
   user: "You",
@@ -20,8 +21,9 @@ const ROLE_LABEL: Record<StoredMessage["role"], string> = {
 export function ReplySpeed({ stats }: { stats: ReplyStats | null }) {
   const text = replySpeedText(stats);
   return text === null ? null : (
-    <span className="reply-speed muted small" title="Measured by Raptor LLM from the server's timings">
+    <span className={`reply-speed small ${stats?.raptor_optimized ? "optimized-speed" : "muted"}`} title="Measured by Raptor LLM from the server's timings">
       {text}
+      {typeof stats?.raptor_optimized === "boolean" && <OptimizationBadge optimized={stats.raptor_optimized} />}
     </span>
   );
 }
@@ -65,7 +67,7 @@ function PendingItem({ pending, onRetry }: { pending: PendingReply; onRetry: () 
 
   return (
     <article className="message message-assistant pending" aria-label="Model reply">
-      <div className="message-role">Model</div>
+      <div className="message-role">Model {typeof pending.raptorOptimized === "boolean" && <OptimizationBadge optimized={pending.raptorOptimized} />}</div>
       {pending.reasoning !== "" && (
         <ThinkingBlock
           text={pending.reasoning}
@@ -83,7 +85,7 @@ function PendingItem({ pending, onRetry }: { pending: PendingReply; onRetry: () 
         )}
       </div>
       {pending.status === "streaming" && (
-        <div className="stream-meta" role="status">
+        <div className={`stream-meta ${pending.raptorOptimized ? "optimized-speed" : ""}`} role="status">
           Generating{approxSpeed !== null ? ` · about ${approxSpeed.toFixed(1)} tok/s (estimate)` : ""}
         </div>
       )}

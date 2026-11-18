@@ -404,6 +404,10 @@ impl RuntimeEngine {
         self.installer.list_installed()
     }
 
+    pub fn install_stage(&self) -> crate::install::InstallStage {
+        self.installer.stage()
+    }
+
     /// The newest `n` llama-server log lines, oldest first.
     pub fn log_tail(&self, n: usize) -> Vec<LogLine> {
         self.server.log_tail(n)

@@ -3,7 +3,12 @@ import { PackageCheck } from "lucide-react";
 import { api, type DependencyReport, type RuntimeUpdate } from "../../api";
 import { messageOf } from "../../lib/errors";
 import { formatBytes } from "../../lib/format";
-import { refreshEngine } from "../../state/engine";
+import { engineStore, unloadModel } from "../../state/engine";
+import { chatStore } from "../../state/chat";
+import { useStore } from "../../hooks/useStore";
+import { runtimeSetupStore, runRuntimeSetup } from "../../state/runtimeSetup";
+import { RuntimeSetupProgress } from "./RuntimeSetupProgress";
+import { InstallRuntime } from "../setup/InstallRuntime";
 import { ConfirmDialog } from "../ConfirmDialog";
 import { Notice } from "../Notice";
 import { Panel } from "../Panel";
@@ -18,7 +23,10 @@ export function DependenciesPanel() {
   const [checking, setChecking] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [confirming, setConfirming] = useState<RuntimeUpdate | null>(null);
-  const [installing, setInstalling] = useState(false);
+  const installing = useStore(runtimeSetupStore, (s) => s.running);
+  const loaded = useStore(engineStore, (s) => s.loaded);
+  const busy = useStore(engineStore, (s) => s.busy);
+  const pending = useStore(chatStore, (s) => s.pending);
   const [notice, setNotice] = useState<string | null>(null);
   const [confirmingVulkan, setConfirmingVulkan] = useState(false);
 
@@ -35,38 +43,31 @@ export function DependenciesPanel() {
   }
 
   useEffect(() => {
-    void check();
-  }, []);
+    if (!installing) void check();
+  }, [installing]);
 
   async function install(update: RuntimeUpdate) {
-    setInstalling(true);
+    setConfirming(null);
     setError(null);
     try {
-      const selection = await api.dependencies.installUpdate(update.id);
+      const selection = await runRuntimeSetup(`${update.id} ${update.latest_version}`, update.size_bytes ?? null, () => api.dependencies.installUpdate(update.id));
       setNotice(`Installed ${selection.id} ${selection.version}.`);
       setConfirming(null);
-      await refreshEngine();
-      await check();
     } catch (e) {
-      setError(messageOf(e));
+      if (!runtimeSetupStore.get().error) setError(messageOf(e));
       setConfirming(null);
-    } finally {
-      setInstalling(false);
     }
   }
 
   async function installVulkan() {
-    setInstalling(true);
+    setConfirmingVulkan(false);
     setError(null);
     try {
-      setNotice(await api.dependencies.installVulkan());
+      setNotice(await runRuntimeSetup("Vulkan GPU engine", report?.vulkan?.size_bytes ?? null, () => api.dependencies.installVulkan()));
       setConfirmingVulkan(false);
-      await check();
     } catch (e) {
-      setError(messageOf(e));
+      if (!runtimeSetupStore.get().error) setError(messageOf(e));
       setConfirmingVulkan(false);
-    } finally {
-      setInstalling(false);
     }
   }
 
@@ -75,15 +76,18 @@ export function DependenciesPanel() {
   return (
     <Panel
       id="dependencies"
-      title="Dependencies and updates"
+      title="Setup and updates"
       icon={<PackageCheck size={18} aria-hidden="true" />}
-      description="Keep the llama.cpp runtime current and check the AMD HIP SDK it relies on."
+      description="Keep the model engine ready. Raptor handles downloading, checking and installing its runtime files."
       actions={
         <button type="button" className="btn btn-sm" onClick={() => void check()} disabled={checking || installing}>
           {checking ? "Checking..." : "Check for updates"}
         </button>
       }
     >
+      <RuntimeSetupProgress />
+      {checking && report === null && <p role="status" className="small muted">Checking your installed components…</p>}
+      {loaded && <Notice tone="info" title="Unload your model before changing runtime files" actions={<button type="button" className="btn btn-sm" disabled={busy !== null || pending !== null} onClick={() => void unloadModel().catch((e) => setError(messageOf(e)))}>Unload model</button>}>Your models and chats stay in place. {pending ? "Finish the current reply first." : "Then choose the update you want below."}</Notice>}
       {error !== null && (
         <Notice tone="danger" title="Update problem">
           {error}
@@ -101,12 +105,13 @@ export function DependenciesPanel() {
       )}
 
       {report !== null && report.updates.length === 0 && report.check_error === null && (
-        <p className="muted small">No runtime is installed yet. Install one from the checklist on the Models page.</p>
+        <div><p className="small">Set up the recommended engine to start using your models.</p><InstallRuntime disabled={loaded !== null || busy !== null} onInstalled={() => void check()} /></div>
       )}
       {report?.updates.map((u) => (
         <div key={u.id} className="dep-row">
           <div>
             <strong>{u.id}</strong>
+            <span className={`badge ${u.available ? "tone-warn" : "tone-ok"}`}>{u.available ? "Update available" : "Ready"}</span>
             <span className="muted small block">
               Installed {u.current_version}
               {u.available ? `, ${u.latest_version} is available` : ` · ${u.note}`}
@@ -117,7 +122,7 @@ export function DependenciesPanel() {
               type="button"
               className="btn btn-primary btn-sm"
               onClick={() => setConfirming(u)}
-              disabled={installing}
+              disabled={installing || loaded !== null || busy !== null}
             >
               Update to {u.latest_version}
             </button>
@@ -131,7 +136,7 @@ export function DependenciesPanel() {
       {report?.hip_sdk && (
         <div className="dep-row">
           <div>
-            <strong>AMD HIP SDK</strong>
+            <strong>AMD HIP SDK</strong> <span className={`badge ${report.hip_sdk.ok ? "tone-ok" : "tone-warn"}`}>{report.hip_sdk.ok ? "Ready" : "Needs AMD setup"}</span>
             <span className="muted small block">
               {report.hip_sdk.versions.length > 0 ? `Found ${report.hip_sdk.versions.join(", ")}. ` : ""}
               {report.hip_sdk.guidance}
@@ -148,15 +153,14 @@ export function DependenciesPanel() {
       {report?.vulkan && (
         <div className="dep-row">
           <div>
-            <strong>Vulkan runtime (optional)</strong>
+            <strong>Vulkan GPU engine</strong> <span className="badge">Optional</span>
             <span className="muted small block">
               {report.vulkan.installed_version !== null
                 ? `Installed ${report.vulkan.installed_version}${report.vulkan.available ? `, ${report.vulkan.latest_version} is available` : ` · ${report.vulkan.note}`}. `
                 : report.vulkan.available
                   ? "Not installed. "
                   : `Not installed · ${report.vulkan.note}. `}
-              Needs no HIP SDK. Choose it per model in the Library: it generated faster on large sparse
-              Mixture-of-experts models that do not fit in VRAM, while ROCm reads prompts faster.
+              An alternative GPU engine that needs no HIP SDK. Choose it in Model options after installation.
             </span>
           </div>
           {report.vulkan.available && (
@@ -164,7 +168,7 @@ export function DependenciesPanel() {
               type="button"
               className="btn btn-sm"
               onClick={() => setConfirmingVulkan(true)}
-              disabled={installing}
+              disabled={installing || loaded !== null || busy !== null}
             >
               {report.vulkan.installed_version !== null ? `Update to ${report.vulkan.latest_version}` : "Install Vulkan runtime"}
             </button>

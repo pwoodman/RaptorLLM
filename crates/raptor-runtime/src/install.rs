@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use std::fs::File;
 use std::io::BufReader;
 use std::path::{Component, Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::AsyncWriteExt;
@@ -277,11 +277,26 @@ struct RuntimeState {
     previous: Option<String>,
 }
 
+/// The actual phase of runtime setup, exposed to the desktop progress display.
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+#[repr(u8)]
+pub enum InstallStage {
+    Idle,
+    Preparing,
+    Downloading,
+    Verifying,
+    Installing,
+    Ready,
+    Failed,
+}
+
 /// Installs, lists, and rolls back runtime versions under `DataDirs::runtimes()`.
 pub struct RuntimeInstaller {
     runtimes: PathBuf,
     downloads: PathBuf,
     fetcher: Arc<dyn Fetcher>,
+    stage: AtomicU8,
 }
 
 impl RuntimeInstaller {
@@ -291,7 +306,24 @@ impl RuntimeInstaller {
             runtimes: dirs.runtimes(),
             downloads: dirs.downloads(),
             fetcher,
+            stage: AtomicU8::new(InstallStage::Idle as u8),
         }
+    }
+
+    pub fn stage(&self) -> InstallStage {
+        match self.stage.load(Ordering::Relaxed) {
+            1 => InstallStage::Preparing,
+            2 => InstallStage::Downloading,
+            3 => InstallStage::Verifying,
+            4 => InstallStage::Installing,
+            5 => InstallStage::Ready,
+            6 => InstallStage::Failed,
+            _ => InstallStage::Idle,
+        }
+    }
+
+    fn set_stage(&self, stage: InstallStage) {
+        self.stage.store(stage as u8, Ordering::Relaxed);
     }
 
     /// Installs `m` (idempotent). If the version is already installed with the
@@ -299,6 +331,21 @@ impl RuntimeInstaller {
     /// verified, extracted into a staging directory and renamed into place. On
     /// any failure the partial download and staging directory are removed.
     pub async fn install(
+        &self,
+        m: &Manifest,
+        cancel: &CancellationToken,
+    ) -> Result<InstalledRuntime> {
+        self.set_stage(InstallStage::Preparing);
+        let result = self.install_checked(m, cancel).await;
+        self.set_stage(if result.is_ok() {
+            InstallStage::Ready
+        } else {
+            InstallStage::Failed
+        });
+        result
+    }
+
+    async fn install_checked(
         &self,
         m: &Manifest,
         cancel: &CancellationToken,
@@ -338,11 +385,13 @@ impl RuntimeInstaller {
         ver_dir: &Path,
         cancel: &CancellationToken,
     ) -> Result<InstalledRuntime> {
+        self.set_stage(InstallStage::Downloading);
         self.fetcher.fetch(&m.url, part, cancel).await?;
         if cancel.is_cancelled() {
             return Err(cancelled());
         }
 
+        self.set_stage(InstallStage::Verifying);
         let part_owned = part.to_path_buf();
         let actual = tokio::task::spawn_blocking(move || sha256_file(&part_owned))
             .await
@@ -365,6 +414,7 @@ impl RuntimeInstaller {
             backend: m.backend,
             sha256: m.sha256.clone(),
         };
+        self.set_stage(InstallStage::Installing);
         tokio::task::spawn_blocking(move || -> Result<()> {
             std::fs::create_dir_all(&stage_owned)?;
             extract_archive(kind, &part_owned, &stage_owned)?;

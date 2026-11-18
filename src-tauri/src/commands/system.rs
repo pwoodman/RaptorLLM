@@ -99,6 +99,22 @@ pub async fn runtime_install_progress(state: State<'_, AppState>) -> Result<u64>
         .load(std::sync::atomic::Ordering::Relaxed))
 }
 
+#[derive(Serialize)]
+pub struct RuntimeInstallStatus {
+    pub stage: raptor_runtime::install::InstallStage,
+    pub downloaded: u64,
+}
+
+#[tauri::command]
+pub async fn runtime_install_status(state: State<'_, AppState>) -> Result<RuntimeInstallStatus> {
+    Ok(RuntimeInstallStatus {
+        stage: state.runtime.install_stage(),
+        downloaded: state
+            .install_progress
+            .load(std::sync::atomic::Ordering::Relaxed),
+    })
+}
+
 /// Makes the previous installed version of runtime `id` current again. The restored version
 /// is pinned, so `runtime_ensure` keeps it until `runtime_unpin` is called.
 #[tauri::command]
@@ -173,6 +189,66 @@ pub async fn runtime_recommend(
 #[tauri::command]
 pub async fn gateway_status(state: State<'_, AppState>) -> Result<GatewayStatus> {
     Ok(state.gateway_status().await)
+}
+
+#[derive(Serialize)]
+pub struct AppIdleStatus {
+    /// None means the OS could not establish inactivity; automatic installation must wait.
+    pub idle_seconds: Option<u32>,
+    pub work_active: bool,
+}
+
+#[tauri::command]
+pub async fn app_idle_status(state: State<'_, AppState>) -> Result<AppIdleStatus> {
+    Ok(AppIdleStatus {
+        idle_seconds: pc_idle_seconds(),
+        work_active: state.update_work_active().await,
+    })
+}
+
+#[cfg(windows)]
+fn pc_idle_seconds() -> Option<u32> {
+    use windows_sys::Win32::System::SystemInformation::GetTickCount;
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetLastInputInfo, LASTINPUTINFO};
+    let mut info = LASTINPUTINFO {
+        cbSize: std::mem::size_of::<LASTINPUTINFO>() as u32,
+        dwTime: 0,
+    };
+    // These are session-wide input timestamps, not application focus or browser timers.
+    if unsafe { GetLastInputInfo(&mut info) } == 0 {
+        return None;
+    }
+    idle_seconds_between(unsafe { GetTickCount() }, info.dwTime)
+}
+
+#[cfg(any(windows, test))]
+fn idle_seconds_between(now: u32, last_input: u32) -> Option<u32> {
+    let elapsed = now.wrapping_sub(last_input);
+    // Handle the 49-day tick rollover, but do not mistake a future/injected timestamp for
+    // weeks of inactivity. Unknown timing postpones an automatic restart.
+    (elapsed < u32::MAX / 2).then_some(elapsed / 1000)
+}
+
+#[cfg(test)]
+mod idle_time_tests {
+    use super::idle_seconds_between;
+
+    #[test]
+    fn session_idle_time_has_a_five_minute_boundary() {
+        assert_eq!(idle_seconds_between(299_999, 0), Some(299));
+        assert_eq!(idle_seconds_between(300_000, 0), Some(300));
+    }
+
+    #[test]
+    fn tick_rollover_is_supported_and_future_input_is_unknown() {
+        assert_eq!(idle_seconds_between(299_999, u32::MAX), Some(300));
+        assert_eq!(idle_seconds_between(500, 501), None);
+    }
+}
+
+#[cfg(not(windows))]
+fn pc_idle_seconds() -> Option<u32> {
+    None
 }
 
 /// Replaces the gateway's self-signed certificate on the running listener and returns the
