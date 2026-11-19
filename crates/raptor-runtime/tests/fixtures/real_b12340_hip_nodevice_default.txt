@@ -1,0 +1,19 @@
+0.01.674.809 I srv  llama_server: initializing ...
+0.01.674.821 I cmn  common_param: common_params_print_info: verbosity = 3 (adjust with the `-lv N` CLI arg)
+0.01.675.325 W srv  server_setup: security: no API key is set and CORS allows all origins (see https://github.com/ggml-org/llama.cpp/pull/25655)
+0.01.692.827 I srv    load_model: loading model 'C:/models/Qwen3.8-27B-UD-IQ3_S.gguf'
+1.00.729.345 I cmn          init: llama threadpool init, n_threads = 8
+1.04.301.520 I srv    load_model: initializing, n_slots = 4, n_ctx_slot = 4096, kv_unified = 'true'
+1.04.315.446 W srv          init: chat template supports preserving reasoning, it is enabled by default (may use more tokens, disable via --no-reasoning-preserve)
+1.04.315.485 I srv  server_run_i: model loaded
+1.04.315.495 I srv  server_on_li: listening on http://127.0.0.1:18080
+1.10.096.518 I slot get_availabl: id  0 | task -1 | selected slot by LRU, n_tokens = 0, t_last = -1
+1.10.096.597 I slot launch_slot_: id  0 | task 0 | processing task, is_child = 0
+1.14.578.729 I slot print_timing: id  0 | task 0 | prompt processing, n_tokens =     42, progress = 0.71, t =   4.48 s / 9.37 tokens per second
+1.16.514.798 I slot print_timing: id  0 | task 0 | prompt processing, n_tokens =     55, progress = 0.93, t =   6.42 s / 8.57 tokens per second
+1.39.509.516 I slot print_timing: id  0 | task 0 | prompt eval time =    8104.11 ms /    59 tokens (  137.36 ms per token,     7.28 tokens per second)
+1.39.509.521 I slot print_timing: id  0 | task 0 |        eval time =   21308.76 ms /    40 tokens (  546.38 ms per token,     1.83 tokens per second)
+1.39.509.523 I slot print_timing: id  0 | task 0 |       total time =   29412.87 ms /    99 tokens
+1.39.509.526 I slot print_timing: id  0 | task 0 |    graphs reused =         39
+1.39.509.528 I slot print_timing: id  0 | task 0 |   graph reallocs =          0    /     0        (same size) / (changed size)
+1.39.509.583 I slot      release: id  0 | task 0 | stop processing: n_tokens = 98, truncated = 0

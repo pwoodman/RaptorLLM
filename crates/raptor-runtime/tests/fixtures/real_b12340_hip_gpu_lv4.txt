@@ -1,0 +1,13 @@
+0.00.271.541 I cmn  common_param:   - ROCm0   : AMD Radeon RX 9060 XT (16304 MiB, 16158 MiB free)
+0.00.762.469 I llama_prepare_model_devices: using device ROCm0 (AMD Radeon RX 9060 XT) (0000:07:00.0) - 16158 MiB free
+0.02.277.924 I load_tensors: offloading output layer to GPU
+0.02.277.929 I load_tensors: offloading 64 repeating layers to GPU
+0.02.277.929 I load_tensors: offloaded 66/66 layers to GPU
+0.02.277.934 I load_tensors:   CPU_Mapped model buffer size =   521.00 MiB
+0.02.277.935 I load_tensors:        ROCm0 model buffer size = 10616.86 MiB
+0.06.531.688 I llama_context:  ROCm_Host  output buffer size =     3.79 MiB
+0.06.542.578 I llama_kv_cache:      ROCm0 KV buffer size =   256.00 MiB
+0.06.558.333 I llama_memory_recurrent:      ROCm0 RS buffer size =   598.50 MiB
+0.06.604.945 I sched_reserve:      ROCm0 compute buffer size =   146.02 MiB
+0.06.604.952 I sched_reserve:  ROCm_Host compute buffer size =    44.02 MiB
+0.06.889.759 I srv    load_model: initializing, n_slots = 4, n_ctx_slot = 4096, kv_unified = 'true'
