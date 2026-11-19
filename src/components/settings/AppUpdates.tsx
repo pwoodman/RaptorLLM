@@ -18,7 +18,7 @@ export function AppUpdates() {
       </div>
       {state.message && <Notice tone="info">{state.message}</Notice>}
       {state.error && <Notice tone="danger">{state.error}</Notice>}
-      {state.error && <p><a href="https://github.com/pwoodman/RaptorLLM/releases" target="_blank" rel="noreferrer">Open GitHub Releases</a></p>}
+      {(state.error || state.version) && <p><a href="https://github.com/pwoodman/RaptorLLM/releases" target="_blank" rel="noreferrer">Open GitHub Releases</a></p>}
       {state.phase === "downloading" && <progress aria-label="Update download progress" max={100} value={state.progress ?? undefined} />}
       {state.notes && <p className="small muted">{state.notes}</p>}
       <div className="button-row">

@@ -4,7 +4,7 @@ import { createStore } from "./store";
 import { engineStore } from "./engine";
 import { chatStore } from "./chat";
 import { downloadsStore } from "./downloads";
-import { localModelsStore } from "./localModels";
+import { localModelsStore, pauseLocalModelSync } from "./localModels";
 import { firstLoadStore } from "./firstLoad";
 import { uiStore } from "./ui";
 
@@ -46,21 +46,26 @@ export function postponeUpdate(): void {
   appUpdatesStore.set({ countdownAt: null, snoozedUntil: Date.now() + CHECK_INTERVAL, message: "Automatic installation postponed for one hour." });
 }
 
-export function appHasUpdateWork(): boolean {
-  if (engineStore.get().busy || chatStore.get().pending || firstLoadStore.get().entry || localModelsStore.get().phase !== "idle") return true;
-  if (Object.values(downloadsStore.get().rows).some((row) => !row.finished && ["queued", "running", "verifying"].includes(row.progress?.state ?? "queued"))) return true;
+function updateBlocker(manual: boolean): string | null {
+  if (chatStore.get().pending) return "Wait for the current chat reply to finish.";
+  if (firstLoadStore.get().entry || document.querySelector(".modal-backdrop")) return "Close the open dialog before installing.";
+  if (document.querySelector('[data-unsaved-work="true"]')) return "Save or clear your unsent chat draft before installing.";
+  if (engineStore.get().busy) return "Wait for the current model or runtime task to finish.";
+  const discovery = localModelsStore.get().phase;
+  if (discovery === "indexing") return "Wait for Raptor to finish registering local models.";
+  if (!manual && discovery === "scanning") return "Raptor is checking local model folders.";
+  if (Object.values(downloadsStore.get().rows).some((row) => !row.finished && ["queued", "running", "verifying"].includes(row.progress?.state ?? "queued"))) return "Finish or cancel the active model download before installing.";
   const ui = uiStore.get();
-  // Settings forms may have unsaved edits. About contains only immediate-save update controls.
-  if (ui.page === "settings" && ui.settingsSection !== "about") return true;
-  return document.querySelector('[data-unsaved-work="true"], .modal-backdrop') !== null;
+  if (ui.page === "settings" && ui.settingsSection !== "about") return "Save your settings and return to About to install the update.";
+  return null;
 }
 
 async function eligibleForAutomaticInstall(): Promise<boolean> {
-  if (!appUpdatesStore.get().enabled || appHasUpdateWork() || appUpdatesStore.get().snoozedUntil > Date.now()) return false;
+  if (!appUpdatesStore.get().enabled || updateBlocker(false) || appUpdatesStore.get().snoozedUntil > Date.now()) return false;
   try {
     const idle = await api.runtime.idleStatus();
     return idle.idle_seconds !== null && idle.idle_seconds >= IDLE_SECONDS && !idle.work_active
-      && appUpdatesStore.get().enabled && !appHasUpdateWork() && appUpdatesStore.get().snoozedUntil <= Date.now();
+      && appUpdatesStore.get().enabled && !updateBlocker(false) && appUpdatesStore.get().snoozedUntil <= Date.now();
   } catch { return false; }
 }
 
@@ -101,13 +106,19 @@ async function downloadCandidate(): Promise<void> {
 
 export async function installAppUpdate(manual = true): Promise<void> {
   if (!candidate || operating || (cycling && manual)) return;
-  if (appHasUpdateWork()) { appUpdatesStore.set({ countdownAt: null, message: "Update is ready. Finish the current task or save your draft before installing." }); return; }
+  const blocker = updateBlocker(manual);
+  if (blocker) { appUpdatesStore.set({ countdownAt: null, message: blocker }); return; }
   operating = true;
+  const resumeLocalModelSync = pauseLocalModelSync();
   try {
     await downloadCandidate();
-    // Downloading may take minutes. Check activity and the preference again immediately before restart.
-    if (appHasUpdateWork() || (!manual && !await eligibleForAutomaticInstall())) {
-      appUpdatesStore.set({ countdownAt: null });
+    // A manual update may run while the PC is in use, but still protects active backend work.
+    const nativeBlocker = manual && (await api.runtime.idleStatus()).work_active
+      ? "Wait for the current runtime task or API request to finish."
+      : null;
+    const currentBlocker = updateBlocker(manual) ?? nativeBlocker;
+    if (currentBlocker || (!manual && !await eligibleForAutomaticInstall())) {
+      appUpdatesStore.set({ countdownAt: null, ...(currentBlocker ? { message: currentBlocker } : {}) });
       return;
     }
     appUpdatesStore.set({ phase: "installing", countdownAt: null, message: "Installing update. Raptor will restart…" });
@@ -115,7 +126,10 @@ export async function installAppUpdate(manual = true): Promise<void> {
   } catch (cause) {
     retryAfter = Date.now() + CHECK_INTERVAL;
     appUpdatesStore.set({ phase: downloaded ? "ready" : "idle", countdownAt: null, error: `Update installation failed: ${cause instanceof Error ? cause.message : String(cause)}` });
-  } finally { operating = false; }
+  } finally {
+    if (appUpdatesStore.get().phase !== "installing") resumeLocalModelSync();
+    operating = false;
+  }
 }
 
 /** Checks metadata hourly. Only downloads/installs after proven PC idle time and no Raptor work. */

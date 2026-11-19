@@ -14,9 +14,16 @@ export const localModelsStore = createStore<{
 
 let inFlight: Promise<void> | null = null;
 let rescanRequested = false;
+let paused = false;
 // Do not repeatedly hash duplicate copies or failed files on every automatic scan.
 const attempted = new Set<string>();
 const failures = new Map<string, string>();
+
+/** Keep discovery from starting a model import while an app update is preparing to restart. */
+export function pauseLocalModelSync(): () => void {
+  paused = true;
+  return () => { paused = false; };
+}
 
 /** One shared queue, independent of pages. A verified model becomes available as soon as it finishes. */
 export function syncLocalModels(retry = false): Promise<void> {
@@ -24,6 +31,7 @@ export function syncLocalModels(retry = false): Promise<void> {
     for (const key of failures.keys()) attempted.delete(key);
     failures.clear();
   }
+  if (paused) return inFlight ?? Promise.resolve();
   if (inFlight) {
     if (retry) rescanRequested = true;
     return inFlight;
@@ -32,7 +40,7 @@ export function syncLocalModels(retry = false): Promise<void> {
     do {
       rescanRequested = false;
       await indexModels();
-    } while (rescanRequested);
+    } while (rescanRequested && !paused);
   })().finally(() => {
     localModelsStore.set({ phase: "idle", current: null });
     inFlight = null;
@@ -44,6 +52,7 @@ async function indexModels(): Promise<void> {
   localModelsStore.set({ phase: "scanning" });
   try {
     const folders = await api.models.discover();
+    if (paused) return;
     const unique = new Map<string, string>();
     for (const folder of folders) {
       for (const item of folder.items) {
@@ -61,6 +70,7 @@ async function indexModels(): Promise<void> {
     let done = 0;
     let added = 0;
     for (const [key, path] of unique) {
+      if (paused) return;
       localModelsStore.set({ current: path });
       attempted.add(key);
       try {
