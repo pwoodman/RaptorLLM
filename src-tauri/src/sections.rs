@@ -40,7 +40,7 @@ pub struct Plan {
 }
 
 impl Plan {
-    /// The plan as the assistant's turn in each section's conversation.
+    /// The shared plan included in each section's request.
     pub fn as_text(&self) -> String {
         let mut out = String::new();
         if !self.facts.is_empty() {

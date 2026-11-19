@@ -12,7 +12,7 @@ use futures_util::stream::BoxStream;
 use futures_util::{Stream, StreamExt};
 use raptor_core::{RaptorError, Result};
 use serde_json::Value;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::thinking::ThinkingCaps;
@@ -85,6 +85,16 @@ pub trait Upstream: Send + Sync {
         Ok(None)
     }
 
+    /// Maximum prompt plus output tokens for one request, as reported by the backend.
+    async fn context_window(&self) -> Option<u32> {
+        None
+    }
+
+    /// Counts the rendered chat prompt, including role markers and tool schemas.
+    async fn chat_prompt_tokens(&self, _body: &Value) -> Option<u64> {
+        None
+    }
+
     /// What the loaded model's chat template says about reasoning effort. The default is "not
     /// supported", so a backend that cannot tell is never sent a reasoning field.
     async fn thinking_caps(&self) -> ThinkingCaps {
@@ -104,7 +114,7 @@ pub struct HttpUpstream {
     installed: Vec<String>,
     /// The last successful `/props` read. A failed read is not kept, so a server that was still
     /// loading is asked again on the next request.
-    caps: Mutex<Option<(Instant, ThinkingCaps)>>,
+    props: Mutex<Option<(Instant, Arc<Value>)>>,
 }
 
 impl HttpUpstream {
@@ -136,12 +146,41 @@ impl HttpUpstream {
             base: base_url.trim_end_matches('/').to_string(),
             client,
             installed,
-            caps: Mutex::new(None),
+            props: Mutex::new(None),
         })
     }
 
     fn url(&self, path: &str) -> String {
         format!("{}{}", self.base, path)
+    }
+
+    async fn server_props(&self) -> Option<Arc<Value>> {
+        if let Some((at, props)) = self
+            .props
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+        {
+            if at.elapsed() < CAPS_TTL {
+                return Some(props.clone());
+            }
+        }
+        let props = Arc::new(
+            self.client
+                .get(self.url("/props"))
+                .timeout(CAPS_TIMEOUT)
+                .send()
+                .await
+                .ok()?
+                .error_for_status()
+                .ok()?
+                .json::<Value>()
+                .await
+                .ok()?,
+        );
+        *self.props.lock().unwrap_or_else(|e| e.into_inner()) =
+            Some((Instant::now(), props.clone()));
+        Some(props)
     }
 }
 
@@ -228,31 +267,34 @@ impl Upstream for HttpUpstream {
 
     /// Reads llama-server's `/props` (kept for ten seconds). Any failure means "not supported".
     async fn thinking_caps(&self) -> ThinkingCaps {
-        if let Some((at, caps)) = self.caps.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
-            if at.elapsed() < CAPS_TTL {
-                return caps.clone();
-            }
-        }
-        let props: Option<Value> = match self
+        self.server_props()
+            .await
+            .map_or_else(ThinkingCaps::default, |props| {
+                ThinkingCaps::from_props(&props)
+            })
+    }
+
+    async fn context_window(&self) -> Option<u32> {
+        let props = self.server_props().await?;
+        let n = props["default_generation_settings"]["n_ctx"].as_u64()?;
+        u32::try_from(n).ok().filter(|n| *n > 0)
+    }
+
+    async fn chat_prompt_tokens(&self, body: &Value) -> Option<u64> {
+        let response: Value = self
             .client
-            .get(self.url("/props"))
+            .post(self.url("/v1/chat/completions/input_tokens"))
+            .json(body)
             .timeout(CAPS_TIMEOUT)
             .send()
             .await
-        {
-            Ok(r) if r.status().is_success() => r.json().await.ok(),
-            Ok(_) => None,
-            Err(e) => {
-                tracing::debug!("props unavailable: {e}");
-                None
-            }
-        };
-        let Some(props) = props else {
-            return ThinkingCaps::default();
-        };
-        let caps = ThinkingCaps::from_props(&props);
-        *self.caps.lock().unwrap_or_else(|e| e.into_inner()) = Some((Instant::now(), caps.clone()));
-        caps
+            .ok()?
+            .error_for_status()
+            .ok()?
+            .json()
+            .await
+            .ok()?;
+        response["input_tokens"].as_u64()
     }
 }
 

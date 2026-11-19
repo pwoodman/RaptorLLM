@@ -104,7 +104,8 @@ export function InstallRuntime({ candidate = null, disabled = false, onInstalled
         {busy && <RuntimeSetupProgress />}
 
         <p className="small">
-          Raptor downloads the files, checks them, and completes setup for you.
+          Raptor downloads the files, checks them, and completes setup for you. The download
+          source is the runtime index in config/runtime-manifest.json.
         </p>
       </ConfirmDialog>
     </div>

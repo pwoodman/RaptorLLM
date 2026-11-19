@@ -38,7 +38,7 @@ GitHub Release includes that asset. Every update also needs a higher app version
 installed build; rebuilding version 0.1.1 cannot update an installation of 0.1.1.
 
 When the signing key is kept locally, build both Windows installers with the existing key, then
-run `node scripts/create-update-manifest.mjs`. It creates `target/release/bundle/latest.json`
+run `node scripts/create-update-manifest.mjs` with an optional release notes file path. It creates `target/release/bundle/latest.json`
 from the generated installer signatures and versioned download URLs. The manifest supports
 existing NSIS and MSI installations and the generic Windows x64 target.
 

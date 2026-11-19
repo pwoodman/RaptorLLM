@@ -228,7 +228,7 @@ async fn a_different_context_uses_the_recommendation_and_says_so() {
     queue_reply(&h.upstream, 3);
     let first = h
         .state
-        .load_model(&h.model_id, Some(4096), None)
+        .load_model(&h.model_id, Some(65_536), None)
         .await
         .unwrap();
     h.state.unload_model().await.unwrap();
@@ -236,7 +236,7 @@ async fn a_different_context_uses_the_recommendation_and_says_so() {
     queue_reply(&h.upstream, 3);
     let second = h
         .state
-        .load_model(&h.model_id, Some(8192), None)
+        .load_model(&h.model_id, Some(98_304), None)
         .await
         .unwrap();
     assert_eq!(first.config_source, ConfigSource::Recommended);
@@ -244,7 +244,7 @@ async fn a_different_context_uses_the_recommendation_and_says_so() {
     assert!(second
         .rationale
         .iter()
-        .any(|r| r.contains("4096-token context")));
+        .any(|r| r.contains("65536-token context")));
 
     let a = first.benchmark.entry.expect("entry").id;
     let b = second.benchmark.entry.expect("entry").id;
@@ -293,10 +293,7 @@ async fn a_crash_leaves_no_stale_loaded_model_and_a_retry_loads_again() {
 async fn a_failed_start_leaves_nothing_loaded_and_is_reported() {
     // Every variant of the speed plan fails, so the load is refused with the last error.
     let h = harness(
-        vec![
-            FakeLaunch::failing("cannot start the server"),
-            FakeLaunch::failing("cannot start the server"),
-        ],
+        vec![FakeLaunch::failing("cannot start the server"); 4],
         0,
         true,
     )
@@ -309,8 +306,8 @@ async fn a_failed_start_leaves_nothing_loaded_and_is_reported() {
     assert!(err.to_string().contains("cannot start the server"), "{err}");
     assert_eq!(
         h.spawner.spawn_count(),
-        2,
-        "the speculative launch, then the plain one"
+        4,
+        "both the speculative and plain launches with multiple slots, then with one slot"
     );
     assert!(h.state.current_model_id().is_none());
     assert!(lock(&h.state.loaded).is_none());
@@ -359,6 +356,7 @@ async fn save_tuning(h: &Harness, gpu_layers: u32, ubatch: u32) {
         .put(
             &key,
             crate::tuned::TunedEntry {
+                qualification: None,
                 gpu_layers,
                 ubatch_size: ubatch,
                 prompt_tps: 2000.0,
@@ -378,110 +376,120 @@ async fn save_tuning(h: &Harness, gpu_layers: u32, ubatch: u32) {
         .unwrap();
 }
 
-/// Like [`save_tuning`], plus a long-prompt setting from a deep tune.
-async fn save_deep_tuning(h: &Harness, short: (u32, u32), long: (u32, u32)) {
-    let entry = h.state.models.library().get(&h.model_id).unwrap();
+#[tokio::test]
+async fn legacy_tuning_without_full_window_proof_does_not_earn_the_badge() {
+    let h = harness(vec![FakeLaunch::hip()], 0, true).await;
+    queue_reply(&h.upstream, 2);
+    save_tuning(&h, 20, 256).await;
+    let result = h.state.load_model(&h.model_id, None, None).await.unwrap();
+    assert!(!result.tuning_applied);
+}
+
+async fn save_qualified(h: &Harness, id: &str) {
+    let entry = h.state.models.library().get(id).unwrap();
+    let path = h.state.models.library().file_path(id).unwrap();
     let hw = h.state.hardware_for_use().await.unwrap();
     let runtime = h.state.runtime.status().runtime.unwrap();
+    let rec = h
+        .state
+        .recommend_for_entry(&entry, &path, 65536)
+        .await
+        .unwrap();
+    let mut config = qualification::stock_config(rec.config.with_model(path).unwrap(), 65536);
+    config.gpu_layers = 20;
+    config.ubatch_size = 256;
+    config.kv_cache = raptor_runtime::config::KvCacheType::Q4_0;
+    config.flash_attn = true;
     let key = h.state.tuned_key(&hw, &entry.sha256, &runtime);
     lock(&h.state.tuned)
         .put(
             &key,
             crate::tuned::TunedEntry {
-                gpu_layers: short.0,
-                ubatch_size: short.1,
-                prompt_tps: 2000.0,
-                gen_tps: 60.0,
-                seconds: 6.0,
-                baseline_seconds: 9.0,
+                qualification: Some(crate::tuned::Qualification {
+                    context_size: 65536,
+                    signature: qualification::signature(&config),
+                    pairs: vec![(15.0, 10.0); 3],
+                }),
+                gpu_layers: 20,
+                ubatch_size: 256,
                 measured_at: 1,
                 profile: Some(crate::tuned::TuneProfile {
-                    kv_cache: raptor_runtime::config::KvCacheType::F16,
+                    kv_cache: config.kv_cache,
                     flash_attn: true,
                 }),
+                prompt_tps: 0.0,
+                gen_tps: 0.0,
+                seconds: 10.0,
+                baseline_seconds: 15.0,
                 baseline_live: None,
                 best_live: None,
-                long: Some(crate::tuned::LongTuned {
-                    gpu_layers: long.0,
-                    ubatch_size: long.1,
-                    prompt_tps: 500.0,
-                    gen_tps: 25.0,
-                    seconds: 15.0,
-                    baseline_seconds: 18.0,
-                    depth: raptor_runtime::tune::DEEP_DEPTH,
-                    profile: Some(crate::tuned::TuneProfile {
-                        kv_cache: raptor_runtime::config::KvCacheType::Q8_0,
-                        flash_attn: true,
-                    }),
-                }),
+                long: None,
             },
         )
         .unwrap();
 }
 
 #[tokio::test]
-async fn a_deep_tune_setting_is_used_for_a_long_window_and_the_quick_one_for_a_short_window() {
-    let h = harness(vec![FakeLaunch::hip()], 0, true).await;
-    queue_reply(&h.upstream, 2);
-    save_deep_tuning(&h, (20, 256), (18, 512)).await;
-    // A window from `context_options` (Large: 32K with an 8-bit cache) is applied as chosen.
-    let long = h
-        .state
-        .load_model_ext(
-            &h.model_id,
-            Some(32_768),
-            None,
-            LoadExtras {
-                kv_cache: Some(raptor_runtime::config::KvCacheType::Q8_0),
-                slots: Some(1),
-                speculation: Some(false),
-            },
-        )
-        .await
-        .unwrap();
-    let config = lock(&h.state.loaded).as_ref().unwrap().config.clone();
-    assert_eq!((config.gpu_layers, config.ubatch_size), (18, 512));
-    assert!(
-        long.rationale
-            .iter()
-            .any(|r| r.starts_with("Tuned on this machine for long prompts")
-                && r.contains("20% faster")),
-        "{:?}",
-        long.rationale
-    );
-    h.state.unload_model().await.unwrap();
-
-    queue_reply(&h.upstream, 2);
-    let short = h
-        .state
-        .load_model(&h.model_id, Some(8_192), None)
-        .await
-        .unwrap();
-    let config = lock(&h.state.loaded).as_ref().unwrap().config.clone();
-    assert_eq!((config.gpu_layers, config.ubatch_size), (20, 256));
-    assert!(short
-        .rationale
-        .iter()
-        .any(|r| r.starts_with("Tuned on this machine:") && r.contains("50% faster")));
+async fn verified_settings_apply_only_at_the_measured_window_and_slot_count() {
+    let h = harness(vec![FakeLaunch::hip(); 3], 0, true).await;
+    let id = add_model(&h, &[("llama.context_length", 131072)]);
+    save_qualified(&h, &id).await;
+    for (ctx, slots, applied) in [
+        (65536, None, true),
+        (98_304, None, false),
+        (65536, Some(2), false),
+    ] {
+        queue_reply(&h.upstream, 2);
+        let load = h
+            .state
+            .load_model_ext(
+                &id,
+                Some(ctx),
+                None,
+                LoadExtras {
+                    slots,
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(load.tuning_applied, applied);
+        if applied {
+            let config = lock(&h.state.loaded).as_ref().unwrap().config.clone();
+            assert_eq!(
+                (
+                    config.ctx_size,
+                    config.parallel_slots,
+                    config.gpu_layers,
+                    config.ubatch_size
+                ),
+                (65536, Some(1), 20, 256)
+            );
+        }
+        h.state.unload_model().await.unwrap();
+    }
 }
 
 #[tokio::test]
-async fn a_saved_tuning_is_used_at_load_and_noted() {
-    let h = harness(vec![FakeLaunch::hip()], 0, true).await;
+async fn an_ordinary_fallback_does_not_inherit_qualification() {
+    // Two failures exhaust the verified profile's attempts (speculation variant and plain);
+    // the ordinary plan's attempt loads, and the verification must not travel with it.
+    let h = harness(
+        vec![
+            FakeLaunch::failing("out of memory"),
+            FakeLaunch::failing("out of memory"),
+            FakeLaunch::hip(),
+        ],
+        0,
+        true,
+    )
+    .await;
+    let id = add_model(&h, &[("llama.context_length", 131072)]);
+    save_qualified(&h, &id).await;
     queue_reply(&h.upstream, 2);
-    save_tuning(&h, 20, 256).await;
-    let result = h.state.load_model(&h.model_id, None, None).await.unwrap();
-    assert!(result.tuning_applied);
-    let config = lock(&h.state.loaded).as_ref().unwrap().config.clone();
-    assert_eq!((config.gpu_layers, config.ubatch_size), (20, 256));
-    assert!(
-        result
-            .rationale
-            .iter()
-            .any(|r| r.starts_with("Tuned on this machine") && r.contains("50% faster")),
-        "{:?}",
-        result.rationale
-    );
+    let result = h.state.load_model(&id, None, None).await.unwrap();
+    assert!(!result.tuning_applied);
+    assert_eq!(h.spawner.spawn_count(), 3);
 }
 
 #[tokio::test]
@@ -497,37 +505,7 @@ async fn without_a_saved_tuning_nothing_is_claimed_as_tuned() {
 }
 
 #[tokio::test]
-async fn a_tuning_that_cannot_start_falls_back_to_the_untuned_setup() {
-    // The tuned setup fails with and without speculation, so the untuned one is tried next.
-    let h = harness(
-        vec![
-            FakeLaunch::failing("out of memory"),
-            FakeLaunch::failing("out of memory"),
-            FakeLaunch::hip(),
-        ],
-        0,
-        true,
-    )
-    .await;
-    queue_reply(&h.upstream, 2);
-    save_tuning(&h, 20, 256).await;
-    let result = h.state.load_model(&h.model_id, None, None).await.unwrap();
-    assert!(
-        !result.tuning_applied,
-        "fallback must not earn an optimized badge"
-    );
-    assert_eq!(h.spawner.spawn_count(), 3);
-    assert!(result.rationale.iter().any(|r| r.contains("did not start")));
-    let config = lock(&h.state.loaded).as_ref().unwrap().config.clone();
-    assert_ne!(
-        (config.gpu_layers, config.ubatch_size),
-        (20, 256),
-        "the setup that started is not the tuned one"
-    );
-}
-
-#[tokio::test]
-async fn tuning_is_refused_while_a_model_is_loaded_and_reports_a_missing_benchmark_tool() {
+async fn tuning_requires_an_idle_server_and_a_model_that_supports_the_floor() {
     let h = harness(vec![FakeLaunch::hip()], 0, true).await;
     queue_reply(&h.upstream, 2);
     h.state.load_model(&h.model_id, None, None).await.unwrap();
@@ -537,10 +515,9 @@ async fn tuning_is_refused_while_a_model_is_loaded_and_reports_a_missing_benchma
     h.state.unload_model().await.unwrap();
     let err = h.state.tune_model(&h.model_id, false).await.unwrap_err();
     assert!(
-        err.to_string().contains("nothing could be measured"),
+        err.to_string().contains("required") || err.to_string().contains("vocabulary"),
         "{err}"
     );
-    assert!(err.to_string().contains("llama-bench"), "{err}");
     let key = h.state.tuned_key(
         &h.state.hardware_for_use().await.unwrap(),
         &h.state.models.library().get(&h.model_id).unwrap().sha256,
@@ -578,7 +555,7 @@ async fn a_larger_context_option_sets_the_cache_type_window_slots_and_every_laye
         .state
         .load_model_ext(
             &h.model_id,
-            Some(32768),
+            Some(98_304),
             None,
             LoadExtras {
                 kv_cache: Some(KvCacheType::Q8_0),
@@ -591,7 +568,7 @@ async fn a_larger_context_option_sets_the_cache_type_window_slots_and_every_laye
     let config = lock(&h.state.loaded).as_ref().unwrap().config.clone();
     assert_eq!(config.kv_cache, KvCacheType::Q8_0);
     assert!(config.flash_attn, "a quantized cache needs flash attention");
-    assert_eq!(config.ctx_size, 32768);
+    assert_eq!(config.ctx_size, 98_304);
     assert_eq!(config.parallel_slots, Some(1));
     assert!(config
         .args()
@@ -601,7 +578,7 @@ async fn a_larger_context_option_sets_the_cache_type_window_slots_and_every_laye
         result
             .rationale
             .iter()
-            .any(|r| r.contains("32768 tokens") && r.contains("q8_0")),
+            .any(|r| r.contains("98304 tokens") && r.contains("q8_0")),
         "{:?}",
         result.rationale
     );
@@ -979,6 +956,16 @@ async fn a_normal_gpu_load_never_reports_cpu_fallback() {
 }
 
 #[tokio::test]
+async fn a_short_native_window_is_refused_before_launching_chat() {
+    let h = harness(vec![], 0, true).await;
+    let short = add_model(&h, &[("llama.context_length", 32_768)]);
+    let err = h.state.load_model(&short, None, None).await.unwrap_err();
+    assert!(matches!(err.error, RaptorError::Unsupported(_)));
+    assert!(err.error.to_string().contains("65536"));
+    assert_eq!(h.spawner.spawn_count(), 0);
+}
+
+#[tokio::test]
 async fn a_preset_supplies_the_context_length_and_is_named_in_the_result() {
     let h = harness(vec![FakeLaunch::hip()], 0, true).await;
     let mut preset = raptor_models::Preset::with_defaults(&h.model_id, "Long");
@@ -993,18 +980,18 @@ async fn a_preset_supplies_the_context_length_and_is_named_in_the_result() {
     assert_eq!(result.preset.as_deref(), Some("Long"));
     assert_eq!(
         lock(&h.state.loaded).as_ref().unwrap().config.ctx_size,
-        2048
+        65_536
     );
 
-    // An explicit context still wins over the preset.
+    // An explicit context above the floor still wins over the preset.
     queue_reply(&h.upstream, 2);
     h.state
-        .load_model(&h.model_id, Some(4096), Some("Long"))
+        .load_model(&h.model_id, Some(73_728), Some("Long"))
         .await
         .unwrap();
     assert_eq!(
         lock(&h.state.loaded).as_ref().unwrap().config.ctx_size,
-        4096
+        73_728
     );
 }
 

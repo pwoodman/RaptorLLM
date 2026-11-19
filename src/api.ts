@@ -248,12 +248,10 @@ export interface StorageUsage {
 }
 
 /** One measured combination from tuning. */
-export interface TuneMeasured {
+export interface TuneTrial {
   gpu_layers: number;
   ubatch: number;
-  prompt_tps: number;
-  gen_tps: number;
-  /** Time of a 4096-token prompt plus a 256-token reply, seconds. */
+  kv_cache: KvCacheType;
   seconds: number;
 }
 
@@ -264,6 +262,7 @@ export interface SavedTuning {
     gpu_layers: number;
     ubatch_size: number;
     measured_at: number;
+    qualification?: { context_size: number; pairs: [number, number][] } | null;
     profile?: { kv_cache: KvCacheType; flash_attn: boolean } | null;
     prompt_tps: number;
     gen_tps: number;
@@ -272,44 +271,14 @@ export interface SavedTuning {
 }
 
 export interface TuneReport {
-  model_id: string;
-  runtime_id?: string;
-  runtime_version?: string;
-  backend?: Backend;
-  context_size?: number;
-  gpu_name?: string | null;
-  gpu_driver?: string | null;
-  results: TuneMeasured[];
-  best: TuneMeasured;
-  baseline: TuneMeasured | null;
-  baseline_live?: TuneMetrics | null;
-  best_live?: TuneMetrics | null;
-  /** How much less time the best setup takes than the untuned one; 0 when the default was best. */
-  improvement_percent: number;
-  errors: string[];
-  /** Deep tune only: the same setups measured with `long_depth` tokens in the context. */
-  long_results: TuneMeasured[];
-  long_best: TuneMeasured | null;
-  /** How much less time the long-prompt setting takes than the quick-tune one at that depth. */
-  long_improvement_percent: number | null;
-  /** Depth of `long_results`; 0 when no deep tune ran. */
-  long_depth: number;
-}
-
-export interface TuneMetrics {
-  gpu_layers: number;
-  ubatch_size: number;
-  parallel_slots?: number | null;
-  kv_cache: KvCacheType;
-  flash_attn: boolean;
-  speculative: boolean;
-  prompt_tokens: number;
+  context_size: number;
   output_tokens: number;
-  ttft_ms: number;
-  prompt_tps: number;
-  gen_tps: number;
-  samples: number;
-  prompt_tokens_exact: boolean;
+  results: TuneTrial[];
+  errors: string[];
+  confirmation: [number, number][];
+  finalist: number | null;
+  saved: boolean;
+  retained_profile: boolean;
 }
 
 /** One context length of the benchmark matrix. Numbers are null when it could not be measured. */
@@ -546,6 +515,7 @@ export interface ReplyStats {
   prompt_tokens_per_second?: number | null;
   time_to_first_token_ms?: number | null;
   generated_tokens?: number | null;
+  omitted_history_turns?: number | null;
 }
 
 export interface StoredMessage {
@@ -943,7 +913,7 @@ export const api = {
     discover: () => call<DiscoveredFolder[]>("models_discover"),
     /** Benchmarks a model on the GPU and saves the fastest settings. Takes minutes; the model must not be loaded. */
     savedTuning: (modelId: string) => call<SavedTuning[]>("models_saved_tuning", { modelId }),
-    tune: (modelId: string, deep = false) => call<TuneReport>("models_tune", { modelId, deep }),
+    tune: (modelId: string, deep = false, context: number | null = null, preset: string | null = null) => call<TuneReport>("models_tune", { modelId, deep, context, preset }),
     /** Speed and memory at growing context lengths (up to `maxDepth`, default 32,768). Takes minutes; the model must not be loaded. */
     contextMatrix: (modelId: string, maxDepth: number | null = null) =>
       call<MatrixReport>("models_context_matrix", { modelId, maxDepth }),

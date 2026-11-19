@@ -18,10 +18,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 pub const SETTINGS_VERSION: u32 = 3;
-/// Product target for coding agents; the effective model context may be lower when hardware or
-/// model limits cannot sustain it, and load reports must explain that constraint.
-pub const DEFAULT_CONTEXT_TARGET: u32 = 65_536;
-pub const MIN_CONTEXT_TARGET: u32 = 65_536;
+/// Models with native long context reserve at least this many tokens for chat.
+pub const DEFAULT_CONTEXT_TARGET: u32 = MIN_CONTEXT_TARGET;
+pub const MIN_CONTEXT_TARGET: u32 = raptor_runtime::config::LONG_CHAT_CONTEXT;
 pub const MAX_CONTEXT_TARGET: u32 = 200_000;
 pub const MAX_EMBEDDING_MODEL_ID_BYTES: usize = 512;
 

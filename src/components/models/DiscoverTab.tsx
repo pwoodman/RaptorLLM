@@ -206,7 +206,10 @@ function RepoDetail({
       {recommended && (
         <Notice tone="success" title="Recommended for this machine">
           {recommended.file_name} ({formatBytes(recommended.size)}
-          {recommended.quant_label ? `, ${recommended.quant_label}` : ""}). It is the largest file rated Great or Ok.
+          {recommended.quant_label ? `, ${recommended.quant_label}` : ""}). Raptor picks the file that
+          leaves the most room on your GPU, then prefers Q4–Q6 weights; below Q4 it takes the
+          smallest file, because that one leaves the most room for the context and runs fastest. Run
+          Optimize speed to verify the full context on your machine.
         </Notice>
       )}
       {fileList.length === 0 && <p className="muted">No top-level GGUF files were found in this repository.</p>}
@@ -232,11 +235,13 @@ function RepoDetail({
                 const blocker = downloadBlocker(file);
                 const isInstalled = installed.has(id);
                 const compat = budget ? rateCompat(file.size, budget) : null;
+                const isRecommended = recommended?.file_name === file.file_name;
                 return (
                   <tr key={file.file_name}>
                     <td className="break">
                       {file.file_name}
                       {file.split_shard && <span className="tag">split shard</span>}
+                      {isRecommended && <span className="tag">recommended</span>}
                     </td>
                     <td>{file.quant_label ?? "Unknown"}</td>
                     <td>{formatBytes(file.size)}</td>

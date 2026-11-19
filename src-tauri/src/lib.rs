@@ -6,6 +6,7 @@
 
 pub mod adapters;
 pub mod backend_choice;
+mod chat_context;
 pub mod commands;
 pub mod conversations;
 pub mod ctxbench;

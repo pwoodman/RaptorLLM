@@ -23,7 +23,7 @@ describe("first-load optimization offer", () => {
   });
 
   it("does not prompt when the model already has a saved optimization profile", async () => {
-    mocks.saved.mockResolvedValue([{ tuning: { profile: { kv_cache: "f16", flash_attn: true } } }]);
+    mocks.saved.mockResolvedValue([{ tuning: { qualification: {context_size: 65536}, profile: { kv_cache: "f16", flash_attn: true } } }]);
     const first = await import("./firstLoad");
     expect(await first.offerFirstLoadOptimization(modelEntry())).toBe(false);
     expect(first.firstLoadStore.get().entry).toBeNull();

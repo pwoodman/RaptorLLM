@@ -167,6 +167,7 @@ pub fn best(measured: &[Measured]) -> Option<&Measured> {
 /// `bench` is the llama-bench binary of the selected runtime. The model is loaded once.
 /// An error is returned as is: the caller decides whether a candidate that failed (out of
 /// memory, say) ends the search or is skipped.
+#[allow(clippy::too_many_arguments)]
 pub async fn measure(
     runner: &dyn CommandRunner,
     bench: &Path,

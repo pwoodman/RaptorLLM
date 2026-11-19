@@ -40,7 +40,7 @@ describe("optimize before loading", () => {
     await loadModel(modelEntry().id);
     expect(mocks.unload.mock.invocationCallOrder[0]).toBeLessThan(mocks.tune.mock.invocationCallOrder[0]);
     expect(mocks.tune.mock.invocationCallOrder[0]).toBeLessThan(mocks.load.mock.invocationCallOrder[0]);
-    expect(mocks.tune).toHaveBeenCalledWith(modelEntry().id, false);
+    expect(mocks.tune).toHaveBeenCalledWith(modelEntry().id, false, null, null);
     expect(mocks.remember).toHaveBeenCalledWith(modelEntry());
     expect(engineStore.get().busy).toBeNull();
     expect(tuningStore.get().activeId).toBeNull();

@@ -419,7 +419,10 @@ pub fn write_gguf_with(path: &Path, extra: &[(&str, u32)]) {
     let mut kvs = Vec::new();
     kv_str(&mut kvs, "general.architecture", "llama");
     kv_str(&mut kvs, "general.name", "Tiny Test Llama");
-    kv_u32(&mut kvs, "llama.context_length", 8192);
+    let has_context_override = extra.iter().any(|(key, _)| *key == "llama.context_length");
+    if !has_context_override {
+        kv_u32(&mut kvs, "llama.context_length", 131_072);
+    }
     kv_u32(&mut kvs, "llama.block_count", 32);
     kv_u32(&mut kvs, "llama.embedding_length", 4096);
     kv_u32(&mut kvs, "llama.attention.head_count", 32);
@@ -431,7 +434,9 @@ pub fn write_gguf_with(path: &Path, extra: &[(&str, u32)]) {
     let mut file = b"GGUF".to_vec();
     file.extend_from_slice(&3u32.to_le_bytes());
     file.extend_from_slice(&0u64.to_le_bytes());
-    file.extend_from_slice(&(8 + extra.len() as u64).to_le_bytes());
+    file.extend_from_slice(
+        &(8 + extra.len() as u64 - u64::from(has_context_override)).to_le_bytes(),
+    );
     file.extend_from_slice(&kvs);
     std::fs::write(path, file).expect("write gguf");
 }

@@ -25,7 +25,7 @@ export function FirstLoadOptimization() {
       confirmLabel="Optimize & chat" cancelLabel="Skip and chat"
       onConfirm={() => chooseFirstLoadOptimization(true)} onCancel={() => chooseFirstLoadOptimization(false)}>
       <div className="optimization-intro"><Zap size={24} aria-hidden="true" /><strong>A one-time speed setup for {entry?.file_name}</strong></div>
-      <p>Raptor tests this model on your PC, saves the fastest settings, then loads it for chat. It takes a few minutes.</p>
+      <p>Raptor tests at least 65,536 tokens in one request slot. It saves settings that prove at least 50% higher throughput in three matched tests, then loads the model for chat. Large models can take hours.</p>
       <p><strong>You only do this once per model on this PC.</strong> Saved settings apply automatically on future compatible loads. A new GPU or runtime can require a fresh tune.</p>
       <p className="small muted">Want to chat now? Skip this step. We won’t ask again for this model; Optimize speed stays available in Model options.</p>
     </ConfirmDialog>

@@ -22,7 +22,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 24
           cache: npm
 
       - name: Setup Rust toolchain
@@ -40,16 +40,16 @@ jobs:
           sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
 
       - name: Install npm dependencies
-        run: npm ci || npm install
+        run: npm ci
 
       - name: Check code formatting (Rust)
         run: cargo fmt --all -- --check
 
       - name: Run Clippy
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --locked --workspace --all-targets -- -D warnings
 
       - name: Run Rust workspace tests
-        run: cargo test --workspace
+        run: cargo test --locked --workspace
 
       - name: Run frontend tests
         run: npm test

@@ -32,7 +32,7 @@ export function ContextMeter({ texts }: { texts: string[] }) {
       <ProgressBar label="Estimated context usage" value={used} max={ctxSize} />
       {nearLimit && (
         <p className="warn-text small">
-          Near the context limit. The model may fail or drop older text. This figure is an estimate.
+          Near the context limit. Raptor may leave out older turns to make room for the reply.
         </p>
       )}
     </div>

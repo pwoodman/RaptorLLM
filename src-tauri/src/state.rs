@@ -239,35 +239,8 @@ fn long_option(default_ctx: u32, n_ctx_train: u32, budget_mib: u64) -> Option<Co
     })
 }
 
-/// What tuning found. `improvement_percent` is how much faster the best setup is than the
-/// untuned one for a long prompt plus a reply (0 when the untuned setup was already best).
-#[derive(Debug, Clone, Serialize)]
-pub struct TuneReport {
-    pub model_id: String,
-    pub runtime_id: String,
-    pub runtime_version: String,
-    pub backend: Backend,
-    pub context_size: u32,
-    pub gpu_name: Option<String>,
-    pub gpu_driver: Option<String>,
-    pub results: Vec<raptor_runtime::tune::Measured>,
-    pub best: raptor_runtime::tune::Measured,
-    pub baseline: Option<raptor_runtime::tune::Measured>,
-    /// Matched streamed-request metrics for the untuned settings.
-    pub baseline_live: Option<crate::tuned::TuneMetrics>,
-    /// Matched streamed-request metrics for the selected optimized settings.
-    pub best_live: Option<crate::tuned::TuneMetrics>,
-    pub improvement_percent: f64,
-    /// Layer counts that could not be measured, with the reason.
-    pub errors: Vec<String>,
-    /// Deep tune only: every setup measured with `long_depth` tokens in the context.
-    pub long_results: Vec<raptor_runtime::tune::Measured>,
-    pub long_best: Option<raptor_runtime::tune::Measured>,
-    /// How much less time the long-prompt setting takes than the quick-tune one at that depth.
-    pub long_improvement_percent: Option<f64>,
-    /// The depth `long_results` were measured at (0 when no deep tune ran).
-    pub long_depth: u32,
-}
+mod qualification;
+pub use qualification::TuneReport;
 
 /// Semantic retrieval uses the loaded model, so the server must offer embeddings when this is the
 /// configured embedding model. A chat model has no pooling of its own and would refuse them, so it
@@ -298,7 +271,7 @@ fn apply_embedding_mode(
 fn median(mut values: Vec<f64>) -> f64 {
     values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     let middle = values.len() / 2;
-    if values.len() % 2 == 0 {
+    if values.len().is_multiple_of(2) {
         (values[middle - 1] + values[middle]) / 2.0
     } else {
         values[middle]
@@ -792,7 +765,7 @@ impl AppState {
         })
         .map_err(RaptorError::Conflict)?;
         let auto_backend = auto_backend_for(
-            &hw,
+            hw,
             rocm_installed,
             cuda_installed,
             sycl_installed,
@@ -1008,6 +981,7 @@ impl AppState {
         extra_device_bytes: u64,
     ) -> Result<Recommendation> {
         let meta = model_meta(entry)?;
+        let floor = self.chat_context_floor(entry);
         let (arch, mut facts) = model_arch(entry, &meta);
         let arch = ModelArch {
             extra_device_bytes,
@@ -1015,7 +989,7 @@ impl AppState {
         };
         let mut rec = self
             .runtime
-            .recommend_config_with_arch(&meta, &arch, ctx, None)?;
+            .recommend_config_with_floor(&meta, &arch, ctx, floor, None)?;
         let gpu = self
             .runtime
             .status()
@@ -1028,10 +1002,11 @@ impl AppState {
             };
             match probe {
                 Ok(projection) => {
-                    rec = self.runtime.recommend_config_with_arch(
+                    rec = self.runtime.recommend_config_with_floor(
                         &meta,
                         &arch,
                         ctx,
+                        floor,
                         Some(&projection),
                     )?;
                 }
@@ -1043,6 +1018,14 @@ impl AppState {
         facts.extend(rec.rationale);
         rec.rationale = facts;
         Ok(rec)
+    }
+
+    fn chat_context_floor(&self, entry: &ModelEntry) -> u32 {
+        if self.settings.snapshot().embedding_model.as_deref() != Some(entry.id.as_str()) {
+            crate::settings::MIN_CONTEXT_TARGET
+        } else {
+            0
+        }
     }
 
     /// Loads a library model. The runtime must already be installed.
@@ -1101,7 +1084,7 @@ impl AppState {
         model_id: &str,
         context: Option<u32>,
         preset: Option<&str>,
-        extras: LoadExtras,
+        mut extras: LoadExtras,
     ) -> std::result::Result<LoadModelResult, LoadFailure> {
         let library = self.models.library();
         let entry = library.get(model_id)?;
@@ -1115,7 +1098,18 @@ impl AppState {
         }
         let path = library.file_path(model_id)?;
         // Checked before anything is stopped: a header without the sizing fields fails here.
-        model_meta(&entry)?;
+        let meta = model_meta(&entry)?;
+        let floor = self.chat_context_floor(&entry);
+        if meta.n_ctx_train < floor {
+            return Err(RaptorError::Unsupported(format!(
+                "This model supports {} context tokens. Chat requires at least {floor}. Choose a model with a larger native context.",
+                meta.n_ctx_train
+            )).into());
+        }
+        if context.is_some_and(|c| c < floor || c > meta.n_ctx_train) {
+            // The supplied cache choice was projected for a different window.
+            extras.kv_cache = None;
+        }
         let applied_preset: Option<Preset> = match preset {
             Some(name) => Some(self.models.presets().get(model_id, name)?),
             None => None,
@@ -1123,7 +1117,8 @@ impl AppState {
         // An explicit context wins over the preset's; the preset's wins over the settings.
         let ctx = context
             .or(applied_preset.as_ref().map(|p| p.n_ctx))
-            .unwrap_or(self.settings.snapshot().context_target);
+            .unwrap_or(self.settings.snapshot().context_target)
+            .max(floor);
         if ctx > crate::settings::MAX_CONTEXT_TARGET {
             return Err(RaptorError::InvalidInput(format!(
                 "context target cannot exceed {} tokens",
@@ -1160,10 +1155,24 @@ impl AppState {
         let runtime = self.runtime.status().runtime.unwrap_or(runtime);
         let saved_tuning = lock(&self.tuned).get(&self.tuned_key(&hw, &entry.sha256, &runtime));
 
+        let qualified = saved_tuning.as_ref().filter(|t| {
+            t.qualification
+                .as_ref()
+                .is_some_and(|q| q.passed() && q.context_size == ctx)
+                && extras.slots.unwrap_or(1) == 1
+                && extras.speculation.unwrap_or(true)
+                && t.profile
+                    .as_ref()
+                    .is_some_and(|p| extras.kv_cache.is_none_or(|kv| kv == p.kv_cache))
+        });
         let draft_bytes = self.planned_draft_bytes(
             &entry,
             runtime.backend,
-            extras.slots.unwrap_or(settings.parallel_slots),
+            if qualified.is_some() {
+                1
+            } else {
+                extras.slots.unwrap_or(settings.parallel_slots)
+            },
             extras.speculation.unwrap_or(true),
         );
         let Recommendation {
@@ -1187,7 +1196,7 @@ impl AppState {
         // An explicit speed sweep takes precedence over the opportunistic post-load benchmark.
         // Start from the same recommendation as the tuner, so an older known-good cache choice
         // cannot make the new tuning look incompatible on every subsequent load.
-        if saved_tuning.as_ref().is_some_and(|t| t.profile.is_some()) {
+        if qualified.is_some() {
             known = None;
         }
         let (config, config_source, mut rationale) = match known {
@@ -1209,15 +1218,32 @@ impl AppState {
         {
             rationale.push(crate::backend_choice::MTP_ON_VULKAN_NOTE.to_string());
         }
-        if let Some(p) = &applied_preset {
-            rationale.push(format!(
-                "Preset \"{}\" supplied the context length ({} tokens).",
-                p.name, p.n_ctx
-            ));
+        if let Some(p) = applied_preset.as_ref().filter(|_| context.is_none()) {
+            rationale.push(if p.n_ctx < floor {
+                format!(
+                    "Preset \"{}\" requested {} tokens; using the {floor}-token chat minimum.",
+                    p.name, p.n_ctx
+                )
+            } else {
+                format!(
+                    "Preset \"{}\" requested {} context tokens.",
+                    p.name, p.n_ctx
+                )
+            });
         }
         let mut config = config;
         config.allow_cpu_fallback = settings.allow_cpu_fallback;
         apply_embedding_mode(&mut config, &settings, model_id, &entry);
+        let measured = qualified.filter(|_| !config.embeddings).and_then(|saved| {
+            let proof = saved.qualification.as_ref()?;
+            let profile = saved.profile.as_ref()?;
+            let mut candidate = qualification::stock_config(config.clone(), ctx);
+            candidate.gpu_layers = saved.gpu_layers;
+            candidate.ubatch_size = saved.ubatch_size;
+            candidate.kv_cache = profile.kv_cache;
+            candidate.flash_attn = profile.flash_attn;
+            (qualification::signature(&candidate) == proof.signature).then_some(candidate)
+        });
         config.parallel_slots = Some(settings.parallel_slots);
         if let Some(n) = extras.slots {
             config.parallel_slots = Some(n);
@@ -1228,7 +1254,7 @@ impl AppState {
             // for the default window and cache) does not cap it.
             config.kv_cache = kv;
             config.flash_attn = true;
-            if let Some(c) = context {
+            if let Some(c) = context.map(|c| c.max(floor)) {
                 config.ctx_size = c;
                 config.batch_size = config.batch_size.min(c);
                 config.ubatch_size = config.ubatch_size.min(config.batch_size);
@@ -1262,69 +1288,55 @@ impl AppState {
                 ));
             }
         }
-        // What tuning measured on this machine for this model and runtime build wins over the
-        // general rules, with the untuned plan kept as the fallback if it cannot start.
-        let untuned = config.clone();
-        let tuned = saved_tuning.as_ref().and_then(|t| {
-            t.compatible_setting(config.ctx_size, config.kv_cache, config.flash_attn)
-        });
-        let mut tuned_applied = false;
-        if let (Some(s), false) = (&tuned, config.embeddings) {
-            config.gpu_layers = s.gpu_layers.min(facts.offload_layers);
-            config.ubatch_size = s.ubatch_size.min(config.batch_size);
-            tuned_applied = true;
-            let gain = (s.baseline_seconds / s.seconds - 1.0) * 100.0;
-            rationale.push(if s.long {
-                format!(
-                    "Tuned on this machine for long prompts (measured with {} tokens of context, used for windows of that size or more): {} layers on the GPU, micro-batch {} ({:.0} prompt tok/s, {:.1} generation tok/s measured; {:.0}% faster than the short-prompt setting at that depth).",
-                    raptor_runtime::tune::DEEP_DEPTH,
-                    config.gpu_layers,
-                    config.ubatch_size,
-                    s.prompt_tps,
-                    s.gen_tps,
-                    gain
-                )
-            } else {
-                format!(
-                    "Tuned on this machine: {} layers on the GPU, micro-batch {} ({:.0} prompt tok/s, {:.1} generation tok/s measured; {:.0}% faster than the untuned setup for a long prompt and a reply).",
-                    config.gpu_layers,
-                    config.ubatch_size,
-                    s.prompt_tps,
-                    s.gen_tps,
-                    gain
-                )
-            });
-        }
-        if saved_tuning.is_some() && tuned.is_none() {
-            rationale.push(
-                "Saved speed settings were measured with different cache or flash-attention settings, so the current load uses its fresh recommendation. Run Optimize speed to refresh the profile.".into(),
-            );
-        }
         let probe = lock(&self.gpu_memory).clone();
         let memory_before = probe.read().await.ok();
-        facts.layers_measured = tuned_applied;
+
         facts.requested_ctx = entry.gguf.context_length.map_or(ctx, |train| {
             ctx.min(u32::try_from(train).unwrap_or(u32::MAX))
         });
-        let mut attempts = crate::tuning::plan(&config, &facts);
-        if tuned_applied {
-            for a in crate::tuning::plan(
-                &untuned,
-                &crate::tuning::Facts {
-                    layers_measured: false,
-                    ..facts.clone()
-                },
-            ) {
-                if !attempts.iter().any(|b| b.config == a.config) {
-                    attempts.push(a);
-                }
+        // A verified profile goes first, with the plan built on top of IT so speculative
+        // decoding (which the full-window proof does not measure) still serves chat. The
+        // ordinary plan follows as the fallback, without claiming the verification.
+        let mut attempts = match &measured {
+            Some(c) => {
+                let mut tuned = facts.clone();
+                tuned.layers_measured = true;
+                let mut proven = crate::tuning::plan(c, &tuned);
+                proven.extend(crate::tuning::plan(&config, &facts));
+                proven
             }
+            None => crate::tuning::plan(&config, &facts),
+        };
+        if floor > 0 && config.parallel_slots.is_some_and(|n| n > 1) {
+            let mut single = config.clone();
+            single.parallel_slots = Some(1);
+            let mut fallback = crate::tuning::plan(&single, &facts);
+            for attempt in &mut fallback {
+                attempt
+                    .notes
+                    .push("Using one request slot to retain the full context window.".into());
+            }
+            attempts.extend(fallback);
         }
         let attempt_count = attempts.len();
         let mut chosen = None;
         for (i, attempt) in attempts.into_iter().enumerate() {
             match self.runtime.load_model(attempt.config.clone()).await {
                 Ok(_) => {
+                    self.upstream.forget_server_facts();
+                    if floor > 0 {
+                        if let Some(actual) =
+                            self.upstream.context_window().await.filter(|n| *n < floor)
+                        {
+                            self.runtime.unload().await?;
+                            let message = format!("The runtime provides {actual} tokens per request. This model requires at least {floor}.");
+                            if i + 1 == attempt_count {
+                                return Err(RaptorError::Runtime(message).into());
+                            }
+                            rationale.push(message);
+                            continue;
+                        }
+                    }
                     chosen = Some(attempt);
                     break;
                 }
@@ -1348,21 +1360,19 @@ impl AppState {
         };
         rationale.extend(chosen.notes);
         let config = chosen.config;
-        if let Some(saved) = &tuned {
-            if tuned_applied
-                && (config.gpu_layers != saved.gpu_layers.min(facts.offload_layers)
-                    || config.ubatch_size != saved.ubatch_size.min(config.batch_size))
-            {
-                rationale.retain(|note| !note.starts_with("Tuned on this machine"));
-                rationale.push("Saved speed settings could not start. This load uses the automatic fallback; your saved profile is still kept.".into());
-                tuned_applied = false;
-            }
+        if floor > 0 && config.parallel_slots.is_some_and(|n| n > 1) {
+            rationale.push("Parallel requests share the context cache. One request can use the full window when the other slots are idle.".into());
         }
-        if config.ctx_size < crate::settings::MIN_CONTEXT_TARGET {
-            rationale.push(format!(
-                "Only {} context tokens fit for this model and machine, below the 65,536-token coding-agent target. The model's trained limit, available memory, and selected GPU offload constrain the effective window.",
-                config.ctx_size
-            ));
+        // The proof binds the layer, micro-batch and cache knobs; the speculative mode on top is
+        // the plan's own choice for this machine, so equal knobs count as verified.
+        let tuned_applied = measured.as_ref().is_some_and(|m| {
+            config.gpu_layers == m.gpu_layers
+                && config.ubatch_size == m.ubatch_size
+                && config.kv_cache == m.kv_cache
+                && config.flash_attn == m.flash_attn
+        });
+        if tuned_applied {
+            rationale.push(format!("Full-window benchmark qualified at least 1.50x baseline throughput across three matched requests with {} tokens in one slot.", config.ctx_size));
         }
         // Did the load fit in dedicated VRAM, or did the driver spill into shared system memory?
         let gpu_memory = match (memory_before, probe.read().await.ok()) {
@@ -1535,100 +1545,6 @@ impl AppState {
         )
     }
 
-    /// Measures a candidate with the real server and the same fixed streamed request used by
-    /// performance history. One warmup is discarded; reported values are medians of three runs.
-    /// The server is always stopped before this method returns, including on request failure.
-    async fn measure_tune_candidate(
-        &self,
-        base: &LaunchConfig,
-        candidate: &raptor_runtime::tune::Measured,
-    ) -> Result<crate::tuned::TuneMetrics> {
-        let mut config = base.clone();
-        config.gpu_layers = candidate.gpu_layers;
-        config.ubatch_size = candidate.ubatch.min(config.batch_size);
-        self.runtime.load_model(config).await?;
-
-        let measured = async {
-            let status = self.runtime.status();
-            if status.server.state != ServerState::Ready {
-                return Err(RaptorError::Runtime(
-                    "the benchmark server did not remain Ready".into(),
-                ));
-            }
-            if candidate.gpu_layers > 0
-                && !matches!(
-                    status.gpu_verdict,
-                    Some(raptor_runtime::verify::GpuVerdict::Verified { .. })
-                )
-            {
-                return Err(RaptorError::Runtime(format!(
-                    "GPU offload was not verified for the {}-layer benchmark candidate",
-                    candidate.gpu_layers
-                )));
-            }
-            let model = self.upstream.models().await?.loaded.ok_or_else(|| {
-                RaptorError::Runtime("the benchmark server reports no model".into())
-            })?;
-
-            // Warm caches and kernel paths, but do not mix the warmup into the comparison.
-            perf::sample(self.upstream.as_ref(), self.token_counter.clone(), &model).await?;
-            let mut ttft = Vec::with_capacity(3);
-            let mut prompt = Vec::with_capacity(3);
-            let mut generation = Vec::with_capacity(3);
-            let mut exact = true;
-            let mut prompt_tokens = None;
-            let mut output_tokens = None;
-            for _ in 0..3 {
-                let (sample, tokenizer_exact) =
-                    perf::sample(self.upstream.as_ref(), self.token_counter.clone(), &model)
-                        .await?;
-                let after = self.runtime.status();
-                let reasons = perf::assess(
-                    &sample,
-                    base.backend,
-                    after.server.state == ServerState::Ready,
-                    after.gpu_verdict.as_ref(),
-                );
-                if !reasons.is_empty() {
-                    return Err(RaptorError::Runtime(format!(
-                        "benchmark sample was unstable: {}",
-                        reasons.join("; ")
-                    )));
-                }
-                exact &= tokenizer_exact;
-                prompt_tokens.get_or_insert(sample.prompt_tokens);
-                output_tokens.get_or_insert(sample.gen_tokens);
-                ttft.push(sample.ttft_ms);
-                prompt.push(sample.prompt_tps);
-                generation.push(sample.gen_tps);
-            }
-            Ok(crate::tuned::TuneMetrics {
-                gpu_layers: candidate.gpu_layers,
-                ubatch_size: candidate.ubatch,
-                parallel_slots: base.parallel_slots,
-                kv_cache: base.kv_cache,
-                flash_attn: base.flash_attn,
-                speculative: base.speculative.is_some(),
-                prompt_tokens: prompt_tokens.unwrap_or(0),
-                output_tokens: output_tokens.unwrap_or(0),
-                ttft_ms: median(ttft),
-                prompt_tps: median(prompt),
-                gen_tps: median(generation),
-                samples: 3,
-                prompt_tokens_exact: exact,
-            })
-        }
-        .await;
-        let stopped = self.runtime.unload().await;
-        match (measured, stopped) {
-            (Ok(metrics), Ok(())) => Ok(metrics),
-            (Err(error), _) => Err(error),
-            (Ok(_), Err(error)) => Err(RaptorError::Runtime(format!(
-                "the comparison finished, but the benchmark server did not stop: {error}"
-            ))),
-        }
-    }
-
     /// Forgets the tuning of a model, so the general rules apply again. True when there was one.
     pub async fn forget_tuning(&self, model_id: &str) -> Result<bool> {
         let _guard = self.runtime_lock.lock().await;
@@ -1643,258 +1559,6 @@ impl AppState {
         let hw = self.hardware_for_use().await?;
         let key = perf::key_for(&hw, &entry.sha256, "");
         Ok(lock(&self.tuned).for_model(&key.machine, &entry.sha256))
-    }
-
-    /// Measures the model at the layer counts and micro-batch sizes worth trying on this machine
-    /// with llama-bench, keeps the fastest for a long prompt plus a reply, and saves it so the next
-    /// load uses it. The model must not be loaded: the benchmark needs the GPU. A layer count that
-    /// fails (out of memory, say) is reported and skipped; the run fails only if nothing could be
-    /// measured. Nothing is saved then.
-    ///
-    /// `deep` adds a second pass: every setup the first pass measured is measured again with
-    /// [`raptor_runtime::tune::DEEP_DEPTH`] tokens in the context, and the fastest there is saved
-    /// as the long-prompt setting, used for windows of that size or more. A setup that fails at
-    /// that depth is reported; if none works, only the quick-tune result is saved.
-    pub async fn tune_model(&self, model_id: &str, deep: bool) -> Result<TuneReport> {
-        use std::sync::atomic::Ordering::Relaxed;
-        self.restore_installed_runtime().await?;
-        let _guard = self.runtime_lock.try_lock().map_err(|_| {
-            RaptorError::Conflict("Another model or runtime task is still running. Wait for it to finish, then optimize again.".into())
-        })?;
-        if self.runtime.status().server.state != ServerState::Stopped {
-            return Err(RaptorError::Conflict(
-                "unload the model before tuning: the benchmark needs the GPU".into(),
-            ));
-        }
-        let library = self.models.library();
-        let entry = library.get(model_id)?;
-        let path = library.file_path(model_id)?;
-        let hw = self.hardware_for_use().await?;
-        // Tuned values are kept per runtime, so the model is tuned on the backend it will use.
-        self.apply_backend_choice(model_id, &entry, &hw).await?;
-        let runtime = self.runtime.status().runtime.ok_or_else(|| {
-            RaptorError::Conflict(
-                "the llama.cpp runtime is not installed; install it from Settings first".into(),
-            )
-        })?;
-        let settings = self.settings.snapshot();
-        let ctx = settings.context_target;
-        let mut base = self
-            .recommend_for_entry(&entry, &path, ctx)
-            .await?
-            .config
-            .with_model(path.clone())?;
-        let recommended_layers = base.gpu_layers;
-        let recommended_config = base.clone();
-        base.parallel_slots = Some(settings.parallel_slots);
-        let mut facts = self.speed_facts(&entry, &base, &hw, runtime.backend);
-        facts.allow_speculation = true;
-        facts.requested_ctx = entry.gguf.context_length.map_or(ctx, |train| {
-            ctx.min(u32::try_from(train).unwrap_or(u32::MAX))
-        });
-        if let Some(kv) = crate::tuning::long_window_cache(&base, &facts) {
-            base.kv_cache = kv;
-            base.flash_attn = true;
-        }
-        // The untuned baseline is exactly the first launch attempt for a normal load. The sweep
-        // varies only layer count and micro-batch around those same cache/speculation/slot flags.
-        if let Some(first) = crate::tuning::plan(&base, &facts).into_iter().next() {
-            base = first.config;
-        }
-
-        let mut layer_counts = vec![base.gpu_layers, recommended_layers];
-        if crate::tuning::oversubscription_applies(&base, &facts)
-            || crate::tuning::oversubscription_applies(&recommended_config, &facts)
-        {
-            layer_counts.push(facts.offload_layers);
-        }
-        layer_counts.sort_unstable();
-        layer_counts.dedup();
-        self.tune_steps.0.store(0, Relaxed);
-        self.tune_steps.1.store(layer_counts.len() as u32, Relaxed);
-        let mut results: Vec<raptor_runtime::tune::Measured> = Vec::new();
-        let mut errors: Vec<String> = Vec::new();
-        for ngl in &layer_counts {
-            match self
-                .runtime
-                .tune_measure(&path, *ngl, base.ctx_size, base.kv_cache, base.flash_attn)
-                .await
-            {
-                Ok(m) => results.extend(m),
-                Err(e) => errors.push(format!("{ngl} layers on the GPU: {e}")),
-            }
-            self.tune_steps.0.fetch_add(1, Relaxed);
-        }
-        let Some(best) = raptor_runtime::tune::best(&results).cloned() else {
-            return Err(RaptorError::Runtime(format!(
-                "nothing could be measured: {}",
-                errors.join("; ")
-            )));
-        };
-        // The untuned setup: the recommended layers and the default micro-batch.
-        let baseline = results
-            .iter()
-            .find(|m| m.gpu_layers == base.gpu_layers && m.ubatch == base.ubatch_size)
-            .or_else(|| results.iter().find(|m| m.gpu_layers == base.gpu_layers))
-            .cloned();
-        let baseline_seconds = baseline.as_ref().map_or(best.seconds, |b| b.seconds);
-
-        let mut long_results: Vec<raptor_runtime::tune::Measured> = Vec::new();
-        if deep {
-            let depth = raptor_runtime::tune::DEEP_DEPTH;
-            self.tune_steps.1.fetch_add(results.len() as u32, Relaxed);
-            for m in &results {
-                match self
-                    .runtime
-                    .bench_depth(
-                        &path,
-                        m.gpu_layers,
-                        m.ubatch,
-                        base.kv_cache,
-                        depth,
-                        base.flash_attn,
-                    )
-                    .await
-                {
-                    Ok(p) => long_results.push(raptor_runtime::tune::Measured::at_depth(
-                        m.gpu_layers,
-                        m.ubatch,
-                        &p,
-                    )),
-                    Err(e) => errors.push(format!(
-                        "{} layers, micro-batch {} at {depth} tokens of context: {e}",
-                        m.gpu_layers, m.ubatch
-                    )),
-                }
-                self.tune_steps.0.fetch_add(1, Relaxed);
-            }
-        }
-        let long_best = raptor_runtime::tune::best(&long_results).cloned();
-        // The quick-tune setup measured at the same depth, to say what the long one gains over it.
-        let long_baseline_seconds = long_best.as_ref().map(|lb| {
-            long_results
-                .iter()
-                .find(|m| m.gpu_layers == best.gpu_layers && m.ubatch == best.ubatch)
-                .map_or(lb.seconds, |m| m.seconds)
-        });
-        let long_improvement_percent = long_best
-            .as_ref()
-            .zip(long_baseline_seconds)
-            .map(|(lb, base_s)| (base_s / lb.seconds - 1.0) * 100.0);
-
-        // llama-bench gives repeatable prompt/decode throughput but has no first-token latency.
-        // Measure the default and winner through the same streaming server path and workload.
-        let comparison_count = if baseline.is_some()
-            && baseline
-                .as_ref()
-                .is_some_and(|b| b.gpu_layers != best.gpu_layers || b.ubatch != best.ubatch)
-        {
-            2
-        } else if baseline.is_some() {
-            1
-        } else {
-            1
-        };
-        self.tune_steps.1.fetch_add(comparison_count, Relaxed);
-        let baseline_live = if let Some(candidate) = baseline.as_ref() {
-            let result = self.measure_tune_candidate(&base, candidate).await;
-            self.tune_steps.0.fetch_add(1, Relaxed);
-            match result {
-                Ok(metrics) => Some(metrics),
-                Err(e) => {
-                    errors.push(format!("default streamed comparison: {e}"));
-                    None
-                }
-            }
-        } else {
-            None
-        };
-        let same_candidate = baseline
-            .as_ref()
-            .is_some_and(|b| b.gpu_layers == best.gpu_layers && b.ubatch == best.ubatch);
-        let best_live = if same_candidate {
-            baseline_live.clone()
-        } else {
-            let result = self.measure_tune_candidate(&base, &best).await;
-            self.tune_steps.0.fetch_add(1, Relaxed);
-            match result {
-                Ok(metrics) => Some(metrics),
-                Err(e) => {
-                    errors.push(format!("optimized streamed comparison: {e}"));
-                    None
-                }
-            }
-        };
-
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| d.as_secs());
-        let key = self.tuned_key(&hw, &entry.sha256, &runtime);
-        // A quick tune keeps a long-prompt setting from an earlier deep tune: it is still the
-        // measured answer for long windows. A deep tune that found nothing keeps it too.
-        let kept_long = lock(&self.tuned).get(&key).and_then(|e| e.long);
-        let long = match (&long_best, long_baseline_seconds) {
-            (Some(lb), Some(base_s)) => Some(crate::tuned::LongTuned {
-                gpu_layers: lb.gpu_layers,
-                ubatch_size: lb.ubatch,
-                prompt_tps: lb.prompt_tps,
-                gen_tps: lb.gen_tps,
-                seconds: lb.seconds,
-                baseline_seconds: base_s,
-                depth: raptor_runtime::tune::DEEP_DEPTH,
-                profile: Some(crate::tuned::TuneProfile {
-                    kv_cache: base.kv_cache,
-                    flash_attn: base.flash_attn,
-                }),
-            }),
-            _ => kept_long,
-        };
-        lock(&self.tuned).put(
-            &key,
-            crate::tuned::TunedEntry {
-                gpu_layers: best.gpu_layers,
-                ubatch_size: best.ubatch,
-                prompt_tps: best.prompt_tps,
-                gen_tps: best.gen_tps,
-                seconds: best.seconds,
-                baseline_seconds,
-                measured_at: now,
-                profile: Some(crate::tuned::TuneProfile {
-                    kv_cache: base.kv_cache,
-                    flash_attn: base.flash_attn,
-                }),
-                baseline_live: baseline_live.clone(),
-                best_live: best_live.clone(),
-                long,
-            },
-        )?;
-        let improvement_percent = (baseline_seconds / best.seconds - 1.0) * 100.0;
-        Ok(TuneReport {
-            model_id: model_id.to_string(),
-            runtime_id: runtime.id,
-            runtime_version: runtime.version,
-            backend: runtime.backend,
-            // `ctx` is the user's requested target. `recommend_for_entry` may reduce it to
-            // fit available VRAM, so report the effective context used by both comparison runs.
-            context_size: base.ctx_size,
-            gpu_name: hw.gpu_of(None).map(|g| g.name.clone()),
-            gpu_driver: hw.gpu_of(None).and_then(|g| g.driver.clone()),
-            results,
-            best,
-            baseline,
-            baseline_live,
-            best_live,
-            improvement_percent,
-            errors,
-            long_depth: if long_results.is_empty() {
-                0
-            } else {
-                raptor_runtime::tune::DEEP_DEPTH
-            },
-            long_results,
-            long_best,
-            long_improvement_percent,
-        })
     }
 
     /// The context windows the GPU can hold for `model_id`: the default, a larger one with an

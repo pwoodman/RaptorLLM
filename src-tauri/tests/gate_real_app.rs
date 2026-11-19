@@ -7,6 +7,8 @@
 //! Ignored by default: it needs a GPU, a llama.cpp build and a large local model.
 //!
 //! Environment:
+//!   RAPTOR_TEST_TUNE_ONLY     when set, run only the full-window test and require a 1.50x result.
+//!   RAPTOR_TEST_CHAT_ONLY     when set, skip the full-window tuning sweep after checking chat.
 //!   RAPTOR_TEST_RUNTIME_DIR  directory that holds `llama-server.exe` (an extracted llama.cpp build).
 //!   RAPTOR_TEST_MODEL        a `.gguf` file. It is referenced in place: never copied, moved or changed.
 //!   RAPTOR_TEST_GPU_NAME, RAPTOR_TEST_GPU_VRAM_MIB and RAPTOR_TEST_GPU_FREE_MIB (optional together)
@@ -121,6 +123,9 @@ async fn exercise(state: &AppState, model: &Path, bin: &Path) -> Result<(), Stri
         &entry.sha256[..entry.sha256.len().min(16)],
         t.elapsed()
     );
+    if std::env::var_os("RAPTOR_TEST_TUNE_ONLY").is_some() {
+        return qualify(state, &entry.id).await;
+    }
     println!(
         "runtime: {} backend={:?} binary={}",
         state
@@ -171,6 +176,13 @@ async fn exercise(state: &AppState, model: &Path, bin: &Path) -> Result<(), Stri
         )
     })?;
     let ready = started.elapsed();
+    let window = state.upstream.context_window().await.unwrap_or(0);
+    println!("runtime reports {window} context tokens per request");
+    if window < 65_536 {
+        return Err(format!(
+            "the runtime reports {window} tokens per request, below 65,536"
+        ));
+    }
     println!(
         "load: ready and benchmarked in {ready:?}, config_source={:?}, cpu_fallback={}",
         loaded.config_source, loaded.cpu_fallback
@@ -286,7 +298,12 @@ async fn exercise(state: &AppState, model: &Path, bin: &Path) -> Result<(), Stri
             Endpoint::ChatCompletions,
             serde_json::json!({
                 "model": model_name,
-                "messages": [{ "role": "user", "content": "Name three colours, one per line." }],
+                "messages": [
+                    { "role": "user", "content": "obsolete ".repeat(window as usize + 512) },
+                    { "role": "assistant", "content": "Earlier draft." },
+                    { "role": "user", "content": "Name three colours, one per line." }
+                ],
+                "chat_template_kwargs": { "enable_thinking": false },
                 "stream": false,
                 "max_tokens": 64,
                 "temperature": 0,
@@ -298,6 +315,13 @@ async fn exercise(state: &AppState, model: &Path, bin: &Path) -> Result<(), Stri
     if let Completion::Json(v) = direct {
         println!("server timings: {}", v["timings"]);
         println!("server usage: {}", v["usage"]);
+        println!("server chat context: {}", v["raptor"]);
+        if v["raptor"]["omitted_history_turns"] != 1
+            || v["usage"]["prompt_tokens"].as_u64().is_none_or(|n| n > 256)
+            || v["usage"]["completion_tokens"].as_u64().unwrap_or(0) == 0
+        {
+            return Err("the over-budget chat request did not compact and generate".into());
+        }
     } else {
         return Err("the direct completion was not a JSON reply".into());
     }
@@ -314,45 +338,40 @@ async fn exercise(state: &AppState, model: &Path, bin: &Path) -> Result<(), Stri
     if history.is_empty() {
         return Err("no performance record was saved".into());
     }
+    if std::env::var_os("RAPTOR_TEST_CHAT_ONLY").is_some() {
+        return Ok(());
+    }
 
     // Run the app's own short optimizer and its matched streamed comparison after unloading.
     state
         .unload_model()
         .await
         .map_err(|e| format!("unload before tune: {e}"))?;
+    qualify(state, &entry.id).await
+}
+
+async fn qualify(state: &AppState, model_id: &str) -> Result<(), String> {
     let tuned = state
-        .tune_model(&entry.id, false)
+        .tune_model(model_id, false)
         .await
         .map_err(|e| format!("Raptor speed tune: {e}"))?;
-    let show = |label: &str, m: &Option<raptor_lib::tuned::TuneMetrics>| {
-        if let Some(m) = m {
-            println!(
-                "{label}: gen={:.2} tok/s prompt={:.2} tok/s ttft={:.1} ms samples={} exact_prompt_tokens={} config=ngl:{},ubatch:{},cache:{:?},flash_attn:{},speculative:{}",
-                m.gen_tps,
-                m.prompt_tps,
-                m.ttft_ms,
-                m.samples,
-                m.prompt_tokens_exact,
-                m.gpu_layers,
-                m.ubatch_size,
-                m.kv_cache,
-                m.flash_attn,
-                m.speculative,
-            );
-        } else {
-            println!("{label}: unavailable (see tune errors below)");
-        }
-    };
-    show("base", &tuned.baseline_live);
-    show("raptor optimized", &tuned.best_live);
     println!(
-        "tune summary: estimated_improvement={:.1}% context={} runtime={} backend={:?} errors={:?}",
-        tuned.improvement_percent,
-        tuned.context_size,
-        tuned.runtime_id,
-        tuned.backend,
-        tuned.errors,
+        "Full-window tuning evidence: {}",
+        serde_json::to_string_pretty(&tuned).unwrap()
     );
+    if tuned.saved {
+        let loaded = state
+            .load_model(model_id, None, None)
+            .await
+            .map_err(|f| f.error.to_string())?;
+        if !loaded.tuning_applied {
+            return Err(
+                "The verified settings were not reproduced by the normal model loader".into(),
+            );
+        }
+    } else if std::env::var_os("RAPTOR_TEST_TUNE_ONLY").is_some() {
+        return Err("No candidate proved a 50% boost at the required context".into());
+    }
     Ok(())
 }
 

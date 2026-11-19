@@ -126,7 +126,7 @@ export function ContextPanel({ settings, onChange }: ContextPanelProps) {
           />
           <span id={`${targetId}-hint`} className={targetValid ? "muted small" : "warn-text small"}>
             {targetValid
-              ? `Coding-agent target: ${formatCount(settings.min_context_target)}–${formatCount(settings.max_context_target)} tokens. The model and available memory can limit the effective window.`
+              ? `Chat requires at least ${formatCount(settings.min_context_target)} tokens. Set a target up to ${formatCount(settings.max_context_target)} based on your model and available memory.`
               : `Enter a whole number from ${formatCount(settings.min_context_target)} to ${formatCount(settings.max_context_target)}.`}
           </span>
         </div>

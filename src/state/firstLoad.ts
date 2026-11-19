@@ -30,7 +30,7 @@ export async function offerFirstLoadOptimization(entry: ModelEntry): Promise<boo
   if (wasOffered(entry) || entry.gguf.architecture === "dflash") return false;
   try {
     const saved = await api.models.savedTuning(entry.id);
-    if (saved.some((profile) => profile.tuning.profile != null)) {
+    if (saved.some((profile) => profile.tuning.qualification != null)) {
       rememberOptimizationOffer(entry);
       return false;
     }

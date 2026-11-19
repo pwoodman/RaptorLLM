@@ -374,3 +374,187 @@ Method (scratchpad `sot.py`): one request writes a plan (a "Facts:" line with na
 - **Long answer at 8 slots, gardening guide, wall clock in the window:** with the draft 11.0 tok/s (335 s, shared-memory spill 4,310 MiB) vs **30.7 without** (102 s, 1,243 MiB). The draft is now skipped above 2 slots. After that change: 35.4, 30.9, 32.9, **32.4 tok/s** on four runs while the section prompt was tuned (final run: 8 complete sections of 209-415 words, ~22 s to the first text). REJECTED: draft with many slots; asking for "about 200-300 words" (instructions echoed into the answer, one section repeated). WORKS: Long answer at 8 slots without the draft.
 
 - **App planner after the fix (2026-11-15, default load, no hand settings; desktop busy):** Nanbeige4.3-33B IQ4_XS-pure at a 6,144-token window: 53/53 layers, q4_0 cache, DFlash draft, 2,725 MiB spilled; built-in benchmark 12.3 tok/s (old plan 8.9). Prompts through the server: code 12.66, story 11.03, **whole-file edit 41.57 tok/s** (1,236 tokens, 1,052/1,375 drafts accepted). WORKS.
+
+## Dense Q4/Q6 parameter sweep 2026-11-23 (RX 9060 XT 16 GB, ROCm build b12374-patched, Nanbeige4.3-33B)
+Framed as a hyperparameter search: every launch knob is a feature, wall time and tokens/s are the loss. Server-level measurements (llama-server, one slot, fa on, t16, b4096) except where noted.
+
+### Same 33B dense model, three files / placements (8,192-token context)
+| Setup | prompt tok/s (4k or 2k fresh) | generation tok/s |
+|---|---|---|
+| Q4_K_M 19.4 GiB, 40/53 GPU layers, f16 KV, ub 512 | 328 | 4.5-4.6 |
+| Q4_K_M, 40 GPU layers, **q8_0 KV** | 327 | 4.5 |
+| Q4_K_M, 40–43 GPU layers, **q4_0 KV** | 196-214 | 4.0-4.9 |
+| Q4_K_M, every layer on GPU (llama.cpp reports 53/53; ~6.5 GiB paged by WDDM) | 217-237 (q4 KV) / 230-252 (f16 KV) | 4.0-4.4 |
+| Q4_K_M, `GGML_CUDA_ENABLE_UNIFIED_MEMORY=1`, all layers | 145 | **1.3 — REJECT** |
+| Q4_K_M, split + classic same-family 3B Q4 draft (-md, draft-simple) | ≈ plain | 3.5 (worse than plain) |
+| Q4_K_M + DFlash2 q4 draft (0.58 GiB GPU-resident) | ≈ plain | **9.6 continuation / 4.9 code-edit** |
+| **IQ4_XS-pure 16.4 GiB, every layer on GPU (5-6 GiB over VRAM? no: ~0.6 GiB paged)** | 329-346 | **8.7-9.0** |
+| IQ4_XS-pure, all layers + DFlash2 q4 draft | 265-346 | **20.3 continuation / 12.4 code-edit** |
+
+- Quant-file choice is the largest single lever on this card: the same weights at IQ4_XS-pure run **2× the decode** of Q4_K_M because the model fits (0.6 GiB of mild spill) instead of needing 13 CPU layers. With the DFlash draft stacked: **20.3 tok/s = 4.4-4.8× the worst config**, ~4.5× its split generation speed, at the same prompt-processing speed (~330).
+- The 0.58 GiB DFlash draft is the small-weights lever that works on a split/spilling dense model (the classic 3B draft loses: its verify batches raise CPU-layer work). DFlash gain shrinks on text it has not seen a pattern for (12.4 tok/s on a fresh 1k code prompt vs 8.4 plain ≈ +48%); on continuation text it is 2.3×. Raptor already applies DFlash automatically (`SpecMode::Dflash`); EAGLE-3-style drafts (`--spec-type draft-eagle3`, supported by b12374 server) are the peer-reviewed direction this points at (arXiv 2503.01840: 3-6× with ~0.5-1.5B feature-level drafters).
+- **q4_0 KV costs ~40% of prompt speed on a dense model at the same layer count** on the HIP flash-attention path (FA dequantizes K/V per read). q8_0 KV is free at 8k (±1% vs f16) and doubles the cache capacity. Raptor's tuner now skips q4_0-KV candidate trials for dense models and keeps them for sparse MoE (where the cache is the spill and the whole KV is read per token: Ornith 46.9 vs 10.8 tok/s q8).
+- `GGML_CUDA_ENABLE_UNIFIED_MEMORY=1` on HIP/RDNA4 is a trap: 3× slower generation (1.3-1.4 tok/s), and it left the driver in a degraded state that slowed other large-VRAM processes (the 3B probe stayed at full speed; the 33B prefill dropped 328→124 until the state decayed). Never pass it on this backend.
+- All-layer spill on a +37%-over-VRAM dense model loses to the layer split on both prefill (217-252 vs 327) and generation (4.0-4.4 vs 4.5-4.6): the earlier `dense_spill_applies` ±10% VRAM gate is right.
+- ubatch on a fully-offloaded model: ±5% (4.17B Q4, peak at 1024: 2045 vs 1966), so a ubatch candidate is only worth a trial when layers or caches move with it.
+- Threads 16 vs 8 on a split model: generation 4.6-4.9 vs 4.4-4.8 (within noise); prefill rows were too noisy (±60% re-runs) to judge; the 3B llama-bench rows reproduce within ±2%.
+- At the 65,536-token floor this 16 GB card must choose: q4_0 KV (3.4 GiB cache) at ~33 GPU layers on the 19.4 GiB model ran **89 tok/s to build 57k fresh, then 161 tok/s prefill and 2.9 tok/s generation at depth** — usable for the qualification but slow. The better answer for the floor is a model that fits with the cache: a 12-14 GiB dense Q4/Q6 (or the 12.0 GiB Qwen3.8-27B IQ3_S, which Raptor already runs 66/66 layers at 8,192 and loads the 82,640-token window on the maximum option). Pushing users to Q4-Q6 *of a file that fits with the target window* is worth 2× over pushing them to the largest Q4 file.
+
+## Nanbeige4.3-33B on the RX 9060 XT: the file that fits wins (2026-11-24, ROCm 7.2, b12374-patched and official b12528)
+
+The 40 tok/s goal for this 33B dense model on this 16 GiB card was chased from every side
+(draft models, runtimes, batch sizes, parallel slots, quantization levels). The lever that moved
+the needle was the size of the file: a model that fits in VRAM with room for the KV cache
+decodes 2.4x faster than one that spills, and 4.7x faster than the 19.4 GiB Q4_K_M that needs a
+layer split.
+
+### The quant ladder (llama-bench, `-ngl 99 -fa on`, q4_0 KV, `-ub 512 -b 2048 -t 16`, 128 generated tokens)
+
+| File | bpw | VRAM | tg128 d0 | tg128 d4096 | ppl (15 chunks) | vs Q4_K_M |
+|---|---|---|---|---|---|---|
+| Q4_K_M (19.4 GiB, does not fit) | 4.85 | 19.36 GiB | 4.7-5.3 (server, layer split) | - | 17.7119 ± 0.9161 | - |
+| IQ4_XS-pure (16.4 GiB, 3% over) | 4.25 | 16.39 GiB | 9.11 ± 0.09 | 8.9 | 17.8926 ± 0.8682 | +1.02% |
+| IQ3_XXS | 3.06 | 13.49 GiB | 19.04 ± 0.02 | - | 18.2695 ± 0.9649 | +3.15% |
+| IQ2_S | 2.50 | 10.38 GiB | 21.58 ± 0.02 | - | 19.6351 ± 1.0981 | +10.86% |
+| IQ2_XS | 2.31 | 9.90 GiB | 21.99 ± 0.02 | 19.26 ± 0.03 | 19.3616 ± 1.0651 | +9.31% |
+| IQ2_M | ~2.5 | 11.35 GiB | 20.71 ± 0.04 | - | 19.1939 ± 1.0233 | +8.37% |
+| **IQ2_XXS (pure, imatrix)** | **2.06** | **9.38 GiB** | **22.17 ± 0.03** (patched) / 22.53 ± 0.36 (b12528) | 19.36 ± 0.05 (patched) / 21.11 ± 0.05 (b12528) | 18.0181 ± 0.6941 | **+1.73%** |
+
+- **WORKS: IQ2_XXS is the file to run on this card.** 22.2-22.7 tok/s against 9.1 for the
+  IQ4_XS-pure file (2.4x) and 4.7-5.3 for Q4_K_M (4.7x), with a perplexity 1.73% above Q4_K_M.
+  The 2.06 bpw "pure" file beats the *higher* bit-rate mixed files (IQ3_XXS 3.06 bpw, IQ2_S
+  2.50 bpw, IQ2_XS 2.31 bpw, IQ2_M ~2.5 bpw) on both quality and speed: it is an imatrix file
+  with every tensor at 2 bit, the mixed files keep some tensors at 4-6 bit and score worse. Bit
+  rate alone does not rank these files; which quantizer made them does.
+- Perplexity method: `llama-perplexity -f results/ppl_corpus.txt -c 2048 --chunks 15` over a
+  177,318-byte corpus built from this repository's own `docs/*.md` and
+  `crates/raptor-runtime/src/fit.rs` (English prose plus Rust code). The chunk-to-chunk spread
+  is large (SE 0.69-1.02), so the +1.7% difference sits inside the noise: the ladder says "no
+  measurable loss", not "no loss". Task-level coding checks are still open.
+- **REJECTED: IQ2_M as the default.** Slower than IQ2_XXS (20.71 vs 22.17 tok/s) *and* 4.6 points
+  worse in perplexity (+8.37% vs +1.73%).
+- **REJECTED: the official b12528 ROCm build as a speed fix.** 9.18 ± 0.09 vs 9.11 ± 0.09 tok/s
+  on IQ4_XS (+0.7%) and 22.53 ± 0.36 vs 22.17 ± 0.03 on IQ2_XXS (+1.6%, inside the run-to-run
+  spread). The patched b12374 build stays the default; b12528 is a prerelease anyway.
+- The card itself is healthy and not the limit: device-copy bandwidth 264.9 GiB/s, FP16
+  4096^3 matmul 6.7 TFLOP/s, and the 3B draft model decodes at 57.57 ± 0.57 tok/s.
+
+### DFlash2 speculative decoding on a target that fits: always slower
+
+DFlash2 (Q4_K_M draft, 0.58 GiB) was re-measured against the plain IQ2_XXS target, both on the
+official b12528 server and on the patched b12374 one (draft block sizes 1/3/5/7):
+
+| Target | Draft | Code tok/s | Prose tok/s | Acceptance (code/prose) |
+|---|---|---|---|---|
+| IQ2_XXS | none | 21.98 | 21.99 | - |
+| IQ2_XXS | DFlash2, n_max 1 | 21.72 | 20.25 | 39.6% / 29.6% |
+| IQ2_XXS | DFlash2, n_max 3 | 18.11 | 15.65 | - |
+| IQ2_XXS | DFlash2, n_max 5 | 19.46 | 15.13 | - |
+| IQ2_XXS | DFlash2, n_max 7 | 19.25 | 15.26 | 10.8% / 5.0% |
+| IQ2_XXS | DFlash2 (b12528, n_max 8) | 13.98 | 11.76 | 9.5% / 5.5% |
+
+- **REJECTED: DFlash2 on a model that fits in VRAM.** Every configuration is at or below plain
+  decoding. The reason is visible in the acceptance column: with the weights resident, the
+  target verifies a draft in microseconds, so a 4-10% acceptance rate cannot pay for the draft
+  tokens, and the extra KV work of the draft costs more than the saves. The earlier DFlash wins
+  in this file (20.3 tok/s on IQ4_XS) were wins against a *spilling* target, where every token
+  costs a PCIe transfer.
+- Consequence for the app: `src-tauri/src/tuning.rs` now only reaches for a DFlash draft when the
+  target spills (`target_spills`). A target that fits gets n-gram drafting instead, and the
+  measured numbers for both are in the note the plan writes into the load rationale.
+
+### Parallel slots: 40 tok/s is reached in aggregate, not per request
+
+`llama-server -np N` with the IQ2_XXS target, every slot decoding the same prompt at the same
+time (256 tokens each, 2048-token window per slot). One measurement per row; the spread over
+three repeats of the four-slot case is 0.03 tok/s:
+
+| Slots | Aggregate tok/s | Per request tok/s | Total tokens | Wall time |
+|---|---|---|---|---|
+| 1 | 21.60 | 21.99 | 256 | 11.85 s |
+| 2 | 33.72 | 17.14-17.34 | 512 | 15.19 s |
+| 3 | **41.44** | 14.11 | 768 | 18.53 s |
+| 4 | **47.17-47.21** | 11.99-12.16 | 1,024 | 21.7 s |
+| 6 | 68.99 | 11.70-11.95 | 1,536 | 22.26 s |
+| 8 | 89.16 | 11.27-11.64 | 2,048 | 22.97 s |
+
+- **WORKS: the goal of 40 tok/s is met in aggregate from three slots up**, and the app's default
+  of four slots (`SERVER_DEFAULT_SLOTS = 4` in `crates/raptor-runtime/src/fit.rs`) sits at
+  47.2 tok/s. This is the app's "Long answer" mode (one slot per parallel request). It is not
+  40 tok/s for one request: per-request speed falls as the slots share the card (22 tok/s alone,
+  about 12 tok/s each at four slots).
+- A first sweep with six *different* prompts per slot gave 33.7 / 37.3 / 43.1 / 47.6 / 61.5 tok/s
+  for 2 / 3 / 4 / 6 / 8 slots, but the spread over repeats of the same configuration was 20%
+  (37.0-43.8 at four slots). The cause is the content, not the setup: with one prompt per slot
+  every slot runs at the same speed, with six prompts some slots finish early and the last slot
+  sets the wall time. Parallel numbers need one prompt per slot or a median over repeats.
+- The app's long-window mode (`--kv-unified`, added above a 32,768-token window) measured
+  44.31 tok/s at four slots with a 32,768-token unified cache, so the shared cache costs
+  nothing measurable.
+
+### N-gram drafting: transformative for copied text, neutral for everything else
+
+A full-file rewrite workload (a 3 KB Rust source file, the model asked to rewrite the whole
+file) and ordinary prose/code prompts, IQ2_XXS target unless stated:
+
+| Workload | Setup | tok/s | Acceptance |
+|---|---|---|---|
+| Whole-file rewrite | plain | 20.83 | - |
+| Whole-file rewrite | `ngram-simple` | **187.39** | 87.6% (mean accepted length 43) |
+| Whole-file rewrite | `ngram-simple` on the IQ4_XS-pure target | 81.82 | - |
+| Whole-file rewrite | DFlash2 + `ngram-simple` | 173.65 | 83.8% |
+| New code, no copy | plain / `ngram-simple` | 21.98 / 22.00 | no matches |
+| Prose, no copy | plain / `ngram-simple` | 21.99 / 22.03 | no matches |
+
+- **WORKS: n-gram drafting for copy-heavy work.** When the answer repeats text the prompt
+  already contains (file edits, refactors, templated text), the draft matches almost every
+  token and the speedup is 9x. On ordinary prompts there are no matches, so it is free.
+- **REJECTED: DFlash2 together with n-grams.** The mixed run is slower than n-grams alone
+  (173.65 vs 187.39 tok/s): the draft model spends time proposing tokens the n-gram would have
+  supplied for free.
+- **WORKS: `ngram-mod` stays the app's n-gram mode.** The app maps `SpecMode::Ngram` to
+  `ngram-mod`; the benchmark winner was `ngram-simple`. Compared head to head (IQ2_XXS):
+
+| Workload | `ngram-mod` | `ngram-simple` | plain |
+|---|---|---|---|
+| Whole-file rewrite (1 slot) | **187.38 tok/s**, acceptance 95.8% (920/960) | 184.68 tok/s, acceptance 87.6% (925/1056) | 20.83 tok/s |
+| New code, prose, memo (1 slot) | 22.02 / 22.06 / 22.02 | 22.00 / 22.03 / 22.00 | 21.98 / 21.99 / 21.99 |
+| Four slots, same prompt | 47.21 / 47.15 / 47.30 | 46.65 / 46.84 / 46.63 | 47.17 / 47.21 / 47.15 |
+
+  `ngram-mod` accepts longer drafts (mean accepted length 62 against 43) and is free in the
+  parallel case, so the app's mapping stays. `ngram-simple` is 1% behind at four slots.
+
+### Tooling notes (the quiet half of the work)
+
+- **REJECTED: the single-shot Hugging Face downloader for large GGUFs.** It silently produced
+  three truncated files (IQ3_XXS 11.95 of 14.49 GB, IQ2_XS 6.99 of 10.63 GB, IQ2_S 2.86 of
+  11.15 GB) while printing "done". `scripts/hf_fetch_mt.py` (24 parallel range requests) lifted
+  the transfer rate from ~2.94 MB/s to 50-92 MB/s, and `scripts/hf_verify.py` checks the file
+  size and the Hub's LFS SHA-256 before anything is benchmarked. Verified hashes:
+  IQ2_XXS `3d5bba3c9c7567b5709243308c741cb9938f44eaa7905ab966f0029e82f08bf4`,
+  IQ2_M `efb45fc475fac828741ba993ff2c4da7dd26bc33262f0b5b994164e394554930`,
+  IQ3_XXS `5d959f2812f07632fc6e8de21373f90d12bda81d0178a2a8868fc3e6812a25da`,
+  IQ2_XS `69db5647e45ea37de7a533c4452598c124c65f09204d8aac7adf7148def5a28e`,
+  IQ2_S `c84bc91903f913da29d635876fa504275964efc487a49950edb49dca4a9a0241`.
+- **UNTESTED: AMD clock and power telemetry.** `amdsmi` is not installed in ROCm 7.1/7.2
+  (`Could not find module 'libamd_smi.so'`), so the GPU clocks during these runs are unknown.
+- **UNTESTED: IQ1_S / IQ1_M** (below 1.5 bpw, not in the Bartowski repository for this model)
+  and tree-based verification (`--spec-type` tree drafts). Both would be needed for a genuine
+  single-request 40 tok/s: IQ2_XXS at 2.06 bpw is the smallest file that still fits the card
+  with the KV cache, and every further bit of compression costs quality.
+
+### What changed in Raptor because of this
+
+- `src-tauri/src/tuning.rs`: a DFlash draft is now only used when the target model spills out of
+  VRAM (`target_spills`). A target that fits gets n-gram drafting instead, because the measured
+  DFlash2 runs against a fitting target were 19.3 tok/s with the draft against 22.0 without, and
+  174 against 187 tok/s on a whole-file edit. The plan also writes a note when the file is larger
+  than the card, naming the measured numbers above so the user can pick a smaller quant.
+- `src/lib/compat.ts`: the model browser now recommends a file that fits *with headroom* before
+  one that only just fits, because the KV cache and the compute buffers need that room. Before
+  this change the browser offered the 12.2 GiB IQ2_M file on this card (8.4% worse in perplexity
+  and slower than IQ2_XXS) and would have offered the 18.6 GiB IQ4_XS file to anyone who asked
+  for it.
+- `src/components/models/DiscoverTab.tsx`: the recommendation notice says what the rule is now.
+- The runtime manifest is unchanged: b12528 is a prerelease and at most 1.6% faster, so the
+  patched b12374 build stays the reference runtime.

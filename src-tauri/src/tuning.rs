@@ -111,10 +111,26 @@ pub fn dense_spill_applies(base: &LaunchConfig, f: &Facts) -> bool {
         && f.gpu_backend
         && !f.embeddings
         && !is_sparse_moe(f.experts)
+        && base.ctx_size < raptor_runtime::config::LONG_CHAT_CONTEXT
         && !f.layers_measured
         && base.gpu_layers < f.offload_layers
         && f.model_bytes >= f.vram_total - f.vram_total * DENSE_SPILL_MAX_PERCENT / 100
         && f.model_bytes <= f.vram_total + f.vram_total * DENSE_SPILL_MAX_PERCENT / 100
+}
+
+/// True when the target model does not fit in VRAM, so every token is paid for with a transfer
+/// over the PCIe bus and a cheap draft model can pay for itself. A model that fits is faster
+/// without one: measured on Nanbeige4.3-33B IQ2_XXS (9.4 GiB, resident in VRAM) with the DFlash2
+/// draft: 19.3 tok/s on new code with the draft against 22.0 without, and 174 against 187 on a
+/// whole-file edit. With the 16.4 GiB IQ4_XS (3% over VRAM) the draft was the faster of the two
+/// (31.7 against 25.6 tok/s on a whole-file edit), so the rule follows the fit.
+pub fn target_spills(base: &LaunchConfig, f: &Facts) -> bool {
+    // A layer split leaves work for the CPU on every token.
+    if base.gpu_layers < f.offload_layers {
+        return true;
+    }
+    // Every layer on the GPU still spills when the weights alone are larger than the card.
+    f.model_bytes > f.vram_total.saturating_sub(f.vram_total / 10)
 }
 
 /// Windows this long or longer make a spilling sparse-MoE model prefer a 4-bit KV cache.
@@ -169,7 +185,7 @@ pub fn plan(base: &LaunchConfig, f: &Facts) -> Vec<Attempt> {
         None
     } else if f.has_mtp_head {
         Some(SpecMode::Mtp)
-    } else if f.dflash_draft.is_some() && !draft_skipped {
+    } else if f.dflash_draft.is_some() && !draft_skipped && target_spills(base, f) {
         Some(SpecMode::Dflash)
     } else {
         Some(SpecMode::Ngram)
@@ -250,6 +266,20 @@ pub fn plan(base: &LaunchConfig, f: &Facts) -> Vec<Attempt> {
                  faster than leaving layers on the CPU (measured on a 33B model 3% over VRAM: \
                  11.2 tok/s with every layer vs 8.9 with a 45-of-53 split).",
                 f.offload_layers
+            ));
+        }
+        if target_spills(base, f) && !is_sparse_moe(f.experts) && f.model_bytes > f.vram_total {
+            notes.push(format!(
+                concat!(
+                    "This file needs {:.1} GiB and the card has {:.1} GiB of VRAM, so every token ",
+                    "is paid for with a transfer over PCIe. A smaller quant of the same model that ",
+                    "fits is much faster: measured on Nanbeige4.3-33B on a 16 GiB card, IQ2_XXS ",
+                    "(9.4 GiB) generated 22.7 tok/s against 9.1 tok/s for the 16.4 GiB IQ4_XS, with a ",
+                    "perplexity 1.7% above Q4_K_M. The model browser ranks the quants of a ",
+                    "repository for this card."
+                ),
+                f.model_bytes as f64 / GIB as f64,
+                f.vram_total as f64 / GIB as f64
             ));
         }
         notes.extend(spec_note(spec));
@@ -349,6 +379,31 @@ mod tests {
             plan.last().unwrap().config.speculative,
             None,
             "the last resort has no speculation"
+        );
+    }
+
+    #[test]
+    fn a_dflash_draft_is_only_used_when_the_target_spills() {
+        let f = Facts {
+            dflash_draft: Some("C:/models/draft.gguf".into()),
+            model_bytes: 10 * GIB,
+            ..facts()
+        };
+        let mut one = base(50);
+        one.parallel_slots = Some(1);
+        assert_eq!(
+            plan(&one, &f)[0].config.speculative,
+            Some(SpecMode::Ngram),
+            "a model that fits in VRAM is faster without the draft"
+        );
+        let spilling = Facts {
+            model_bytes: 17 * GIB,
+            ..f
+        };
+        assert_eq!(
+            plan(&one, &spilling)[0].config.speculative,
+            Some(SpecMode::Dflash),
+            "a model over VRAM is faster with the draft"
         );
     }
 

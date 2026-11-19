@@ -66,6 +66,7 @@ pub struct ChatStats {
     pub prompt_tokens_per_second: Option<f64>,
     pub time_to_first_token_ms: Option<f64>,
     pub generated_tokens: Option<u64>,
+    pub omitted_history_turns: Option<u64>,
 }
 
 impl ChatStats {
@@ -78,6 +79,7 @@ impl ChatStats {
             prompt_tokens_per_second: f("prompt_tokens_per_second"),
             time_to_first_token_ms: f("time_to_first_token_ms"),
             generated_tokens: r.get("generated_tokens").and_then(Value::as_u64),
+            omitted_history_turns: r.get("omitted_history_turns").and_then(Value::as_u64),
         };
         (stats != Self::default()).then_some(stats)
     }
@@ -416,7 +418,22 @@ where
                     for piece in pieces_of(&chunk["choices"][0]["delta"]) {
                         on_piece(piece);
                     }
-                    if let Some(found) = ChatStats::from_reply(&chunk) {
+                    if let Some(mut found) = ChatStats::from_reply(&chunk) {
+                        if let Some(previous) = &stats {
+                            found.omitted_history_turns = found
+                                .omitted_history_turns
+                                .or(previous.omitted_history_turns);
+                            found.tokens_per_second =
+                                found.tokens_per_second.or(previous.tokens_per_second);
+                            found.prompt_tokens_per_second = found
+                                .prompt_tokens_per_second
+                                .or(previous.prompt_tokens_per_second);
+                            found.time_to_first_token_ms = found
+                                .time_to_first_token_ms
+                                .or(previous.time_to_first_token_ms);
+                            found.generated_tokens =
+                                found.generated_tokens.or(previous.generated_tokens);
+                        }
                         stats = Some(found);
                     }
                 }
@@ -458,6 +475,7 @@ where
     F: FnMut(Piece) + Send,
 {
     use crate::sections;
+    use raptor_gateway::Upstream;
     let started = std::time::Instant::now();
     let Some(last_user) = messages.iter().rposition(|m| m.role == Role::User) else {
         return run_stream(upstream, body, cancel, on_piece).await;
@@ -467,7 +485,7 @@ where
         .content
         .push_str(sections::PLAN_INSTRUCTION);
     let mut plan_text = String::new();
-    let (cancelled, plan_stats) = run_stream(
+    let plan_result = run_stream(
         upstream.clone(),
         section_body(&body, &plan_messages, sections::PLAN_MAX_TOKENS)?,
         cancel.clone(),
@@ -477,7 +495,13 @@ where
             }
         },
     )
-    .await?;
+    .await;
+    let (cancelled, plan_stats) = match plan_result {
+        Err(RaptorError::InvalidInput(_)) => {
+            return run_stream(upstream, body, cancel, on_piece).await
+        }
+        other => other?,
+    };
     if cancelled {
         return Ok((true, None));
     }
@@ -486,16 +510,39 @@ where
     };
 
     let n = plan.points.len();
+    // Parallel slots share KV space. A long brief should run fewer sections at once, so
+    // each request can keep the source material and still leave room to write its section.
+    let parallelism = match upstream.context_window().await {
+        Some(window) => upstream
+            .chat_prompt_tokens(&body)
+            .await
+            .map_or(1, |prompt| {
+                let per_section = prompt + u64::from(sections::SECTION_MAX_TOKENS) + 512;
+                (u64::from(window) / per_section).clamp(1, n as u64) as usize
+            }),
+        None => n,
+    };
+    let permits = Arc::new(tokio::sync::Semaphore::new(parallelism));
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(usize, Option<String>)>();
     let mut tasks = Vec::with_capacity(n);
     for i in 0..n {
         let mut msgs = messages.clone();
-        msgs.push(ChatMessage::new(Role::Assistant, plan.as_text()));
-        msgs.push(ChatMessage::new(Role::User, plan.section_prompt(i)));
+        msgs[last_user].content.push_str("\n\n");
+        msgs[last_user].content.push_str(&plan.as_text());
+        msgs[last_user].content.push_str("\n");
+        msgs[last_user].content.push_str(&plan.section_prompt(i));
         let section = section_body(&body, &msgs, sections::SECTION_MAX_TOKENS)?;
         let (done_tx, up, stop) = (tx.clone(), upstream.clone(), cancel.clone());
         let text_tx = tx.clone();
+        let permits = permits.clone();
         tasks.push(tauri::async_runtime::spawn(async move {
+            let _permit = tokio::select! {
+                _ = stop.cancelled() => {
+                    let _ = done_tx.send((i, None));
+                    return Ok((true, None));
+                }
+                permit = permits.acquire() => permit.map_err(|e| RaptorError::Internal(e.to_string()))?,
+            };
             let r = run_stream(up, section, stop, move |p| {
                 if let Piece::Text(t) = p {
                     let _ = text_tx.send((i, Some(t)));
@@ -522,14 +569,21 @@ where
         }
     }
 
-    let mut generated = plan_stats.and_then(|s| s.generated_tokens).unwrap_or(0);
+    let mut generated = plan_stats
+        .as_ref()
+        .and_then(|s| s.generated_tokens)
+        .unwrap_or(0);
+    let mut omitted = plan_stats.and_then(|s| s.omitted_history_turns);
     let mut any_cancelled = false;
     let mut first_error = None;
     for t in tasks {
         match t.await {
             Ok(Ok((c, s))) => {
                 any_cancelled |= c;
-                generated += s.and_then(|s| s.generated_tokens).unwrap_or(0);
+                if let Some(s) = s {
+                    generated += s.generated_tokens.unwrap_or(0);
+                    omitted = omitted.max(s.omitted_history_turns);
+                }
             }
             Ok(Err(e)) => {
                 first_error.get_or_insert(e);
@@ -544,11 +598,12 @@ where
         return Err(e);
     }
     let seconds = started.elapsed().as_secs_f64();
-    let stats = (generated > 0).then(|| ChatStats {
-        tokens_per_second: (seconds > 0.0).then(|| generated as f64 / seconds),
+    let stats = (generated > 0 || omitted.is_some()).then(|| ChatStats {
+        tokens_per_second: (generated > 0 && seconds > 0.0).then(|| generated as f64 / seconds),
         prompt_tokens_per_second: None,
         time_to_first_token_ms: first_text_ms,
-        generated_tokens: Some(generated),
+        generated_tokens: (generated > 0).then_some(generated),
+        omitted_history_turns: omitted,
     });
     Ok((any_cancelled || cancel.is_cancelled(), stats))
 }
@@ -661,18 +716,15 @@ mod tests {
         // independently of scheduling; the assembled response is asserted above.
         let mut section_bodies: Vec<_> = bodies[1..].iter().collect();
         section_bodies
-            .sort_by_key(|body| body["messages"][2]["content"].as_str().unwrap().to_owned());
+            .sort_by_key(|body| body["messages"][0]["content"].as_str().unwrap().to_owned());
         for (i, b) in section_bodies.iter().enumerate() {
             let m = b["messages"].as_array().unwrap();
-            assert_eq!(m.len(), 3);
-            assert_eq!(
-                m[0]["content"], "Write a story",
-                "the user's question is unchanged"
-            );
-            assert!(m[1]["content"].as_str().unwrap().contains("Facts: Mara."));
-            let ask = m[2]["content"].as_str().unwrap();
+            assert_eq!(m.len(), 1);
+            let ask = m[0]["content"].as_str().unwrap();
+            assert!(ask.starts_with("Write a story\n\n"), "{ask}");
+            assert!(ask.contains("Facts: Mara."), "{ask}");
             assert!(
-                ask.starts_with(&format!("Write section {} of 2", i + 1)),
+                ask.contains(&format!("Write section {} of 2", i + 1)),
                 "{ask}"
             );
             assert_eq!(b["max_tokens"], crate::sections::SECTION_MAX_TOKENS);

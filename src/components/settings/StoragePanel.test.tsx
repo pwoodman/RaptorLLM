@@ -57,7 +57,7 @@ describe("StoragePanel", () => {
     expect(onChange).toHaveBeenCalledWith(
       expect.objectContaining({ storage_dir: selected, restart_required: true }),
     );
-    expect(screen.getByRole("textbox", { name: "Storage folder" })).toHaveValue(selected);
+    expect(screen.getByRole("textbox", { name: "Raptor data folder" })).toHaveValue(selected);
   });
 
   it("shows folder picker errors instead of silently ignoring them", async () => {

@@ -21,7 +21,7 @@ const ROLE_LABEL: Record<StoredMessage["role"], string> = {
 export function ReplySpeed({ stats }: { stats: ReplyStats | null }) {
   const text = replySpeedText(stats);
   return text === null ? null : (
-    <span className={`reply-speed small ${stats?.raptor_optimized ? "optimized-speed" : "muted"}`} title="Measured by Raptor LLM from the server's timings">
+    <span className={`reply-speed small ${stats?.raptor_optimized ? "optimized-speed" : "muted"}`} title="Reply timings and context usage">
       {text}
       {typeof stats?.raptor_optimized === "boolean" && <OptimizationBadge optimized={stats.raptor_optimized} />}
     </span>
@@ -36,6 +36,8 @@ export function replySpeedText(stats: ReplyStats | null): string | null {
     const ms = stats.time_to_first_token_ms;
     parts.push(ms >= 1000 ? `${(ms / 1000).toFixed(2)} s to first token` : `${Math.round(ms)} ms to first token`);
   }
+  const omitted = stats.omitted_history_turns ?? 0;
+  if (omitted > 0) parts.push(`${omitted} earlier ${omitted === 1 ? "exchange" : "exchanges"} omitted for this reply`);
   return parts.length > 0 ? parts.join(" · ") : null;
 }
 

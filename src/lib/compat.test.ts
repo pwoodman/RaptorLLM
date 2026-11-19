@@ -43,6 +43,31 @@ describe("recommendFile", () => {
     expect(recommendFile(files, rx9060)?.file_name).toBe("mid-Q5.gguf");
   });
 
+  it("prefers a fitting Q6 file over a larger fitting Q8 file", () => {
+    const q6 = file("model-Q6_K.gguf", 6 * GIB, { quant_label: "Q6_K" });
+    const q8 = file("model-Q8_0.gguf", 8 * GIB, { quant_label: "Q8_0" });
+    expect(recommendFile([q8, q6], rx9060)).toBe(q6);
+  });
+
+  it("prefers a file with headroom over a bigger file that only just fits", () => {
+    // 13 GiB leaves no room for the KV cache on a 16 GiB card; 10 GiB does.
+    const tight = file("model-Q4_K_M.gguf", 13 * GIB, { quant_label: "Q4_K_M" });
+    const roomy = file("model-IQ2_XXS.gguf", 10 * GIB, { quant_label: "IQ2_XXS" });
+    expect(recommendFile([tight, roomy], rx9060)?.file_name).toBe("model-IQ2_XXS.gguf");
+  });
+
+  it("picks the smallest low-bit file when no Q4-Q6 file fits with headroom", () => {
+    // The Nanbeige4.3-33B case: no Q4 file fits this card, and below Q4 the smallest file is the
+    // fastest and leaves the most room for the KV cache.
+    const files = [
+      file("model-IQ2_S.gguf", 10.9 * GIB, { quant_label: "IQ2_S" }),
+      file("model-IQ2_XS.gguf", 10.4 * GIB, { quant_label: "IQ2_XS" }),
+      file("model-IQ2_XXS.gguf", 9.9 * GIB, { quant_label: "IQ2_XXS" }),
+      file("model-IQ4_XS.gguf", 16.4 * GIB, { quant_label: "IQ4_XS" }),
+    ];
+    expect(recommendFile(files, rx9060)?.file_name).toBe("model-IQ2_XXS.gguf");
+  });
+
   it("never recommends a file that cannot be verified or is a split shard", () => {
     const files = [
       file("unverified.gguf", 12 * GIB, { sha256: null }),

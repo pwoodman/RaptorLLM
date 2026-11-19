@@ -4,6 +4,8 @@ import { resolve } from "node:path";
 // Run after a signed Windows build. No signing key is read or included in this public file.
 const pkg = JSON.parse(await readFile("package.json", "utf8"));
 const version = pkg.version;
+const notesPath = process.argv[2];
+const notes = notesPath ? (await readFile(notesPath, "utf8")).trim() : `Raptor LLM ${version}`;
 const base = `https://github.com/pwoodman/RaptorLLM/releases/download/v${version}/`;
 const bundleDir = resolve("target/release/bundle");
 async function platform(folder, filename) {
@@ -18,7 +20,7 @@ const nsis = await platform("nsis", `Raptor LLM_${version}_x64-setup.exe`);
 const msi = await platform("msi", `Raptor LLM_${version}_x64_en-US.msi`);
 const manifest = {
   version,
-  notes: "Faster quick tuning with benchmark cleanup, one-time Optimize & chat with Skip, Raptor Optimized badges and speed colors, clearer dependency setup progress and retry, and signed updates after 5 minutes of PC idle time with a postponable countdown.",
+  notes,
   pub_date: new Date().toISOString(),
   platforms: { "windows-x86_64": nsis, "windows-x86_64-nsis": nsis, "windows-x86_64-msi": msi },
 };

@@ -9,50 +9,17 @@ import { messageOf } from "../../lib/errors";
 import { ConfirmDialog } from "../ConfirmDialog";
 import { Notice } from "../Notice";
 
-/** "34.7 tok/s", "1,707 tok/s". */
-export function tps(n: number): string {
-  return `${n >= 100 ? Math.round(n).toLocaleString() : n.toFixed(1)} tok/s`;
-}
-
-function percentChange(base: number, candidate: number): string {
-  if (base <= 0) return "n/a";
-  const delta = Math.round(((candidate - base) / base) * 100);
-  return `${delta > 0 ? "+" : ""}${delta}%`;
-}
-
-function formatTtft(ms: number): string {
-  return ms >= 1000 ? `${(ms / 1000).toFixed(2)} s` : `${Math.round(ms)} ms`;
-}
-
-/** What the result means in a sentence. Pure, for testing. */
 export function tuneSummary(r: TuneReport): string {
-  const b = r.best;
-  const where = `${b.gpu_layers} layers on the GPU, micro-batch ${b.ubatch}`;
-  if (r.improvement_percent < 3) {
-    return `The default setup was already the fastest found (${where}): ${tps(b.prompt_tps)} prompt, ${tps(b.gen_tps)} generation. Saved for future loads with the same runtime and cache settings.`;
-  }
-  return `${where}: ${tps(b.prompt_tps)} prompt, ${tps(b.gen_tps)} generation. About ${Math.round(r.improvement_percent)}% less time for a long prompt plus a reply than the default setup. Saved: future loads with the same runtime and cache settings use it.`;
+  const window = r.context_size.toLocaleString("en-US");
+  const outcome = r.saved ? "Qualified settings saved." : r.retained_profile ? "Previous qualified settings retained." : "Default retained.";
+  if (r.results.length === 1) return `${outcome} Only the default completed the ${window}-token test.`;
+  if (r.finalist !== null && r.confirmation.length < 3) return `${outcome} Candidate ${r.finalist} completed ${r.confirmation.length} of three required confirmation pairs at ${window} tokens.`;
+  if (!r.confirmation.length) return `${outcome} No candidate advanced to confirmation at ${window} tokens.`;
+  const gain = Math.min(...r.confirmation.map(([base, candidate]) => (base / candidate - 1) * 100));
+  const minimum = (Math.floor(gain * 10) / 10).toFixed(1);
+  return `${outcome} Candidate ${r.finalist}. Lowest speed change across three matched ${window}-token tests: ${minimum}%. Qualification requires at least 50% in every pair.`;
 }
 
-/** The long-prompt result of a deep tune in a sentence, or null when none ran or none worked. Pure. */
-export function longTuneSummary(r: TuneReport): string | null {
-  const b = r.long_best;
-  if (b === null || r.long_depth === 0) return null;
-  const depth = r.long_depth.toLocaleString("en-US");
-  const where = `${b.gpu_layers} layers on the GPU, micro-batch ${b.ubatch}`;
-  const gain = r.long_improvement_percent ?? 0;
-  const same = b.gpu_layers === r.best.gpu_layers && b.ubatch === r.best.ubatch;
-  if (same || gain < 3) {
-    return `With ${depth} tokens already in the context the same setup is fastest (${tps(b.prompt_tps)} prompt, ${tps(b.gen_tps)} generation), so windows of that size use it too.`;
-  }
-  return `With ${depth} tokens already in the context, ${where} is faster: ${tps(b.prompt_tps)} prompt, ${tps(b.gen_tps)} generation, about ${Math.round(gain)}% less time than the setup above at that depth. Saved: used for context windows of ${depth} tokens or more.`;
-}
-
-/**
- * Measures one model at the layer counts and micro-batch sizes worth trying on this machine and
- * remembers the fastest, so loads use it. It runs a benchmark on the GPU for a few minutes, so it
- * is offered only while no model is loaded, and it asks first.
- */
 export function TuneSpeed({ entry, disabled, onRunningChange, prominent = false }: { entry: ModelEntry; disabled: boolean; onRunningChange?: (running: boolean) => void; prominent?: boolean }) {
   const running = useStore(tuningStore, (s) => s.activeId === entry.id);
   const startedAt = useStore(tuningStore, (s) => s.startedAt);
@@ -110,7 +77,7 @@ export function TuneSpeed({ entry, disabled, onRunningChange, prominent = false 
         const status = await api.models.unload();
         engineStore.set({ status, loaded: null, loadReport: null });
       }
-      setReport(await api.models.tune(entry.id, deep));
+      setReport(await api.models.tune(entry.id, deep, resumeChat ? previous.window?.ctx ?? null : null, resumeChat ? previous.preset ?? null : null));
       try { setSaved(await api.models.savedTuning(entry.id)); setSavedError(false); }
       catch { setSavedError(true); }
       if (resumeChat) {
@@ -159,7 +126,7 @@ export function TuneSpeed({ entry, disabled, onRunningChange, prominent = false 
           />
           <p className="small muted">
             Testing{progress && progress.total > 0 ? ` setup ${Math.min(progress.done + 1, progress.total)} of ${progress.total}` : " the first setup"}{startedAt ? ` · ${Math.floor((Date.now() - startedAt) / 1000)} s elapsed` : ""}. This
-            takes {deep ? "several minutes, longer than a quick tune" : "a few minutes"}. Keep the app open.
+            may take a long time at full context. Keep the app open.
           </p>
         </div>
       )}
@@ -171,11 +138,17 @@ export function TuneSpeed({ entry, disabled, onRunningChange, prominent = false 
       {saved.length > 0 && !running && (
         <div className="saved-tuning" role="status">
           <strong className="small">Speed settings saved</strong>
-          <p className="small muted">Applied automatically when the runtime and cache settings match. You can load the model now.</p>
-          {saved.map((profile) => <p className="small" key={`${profile.runtime_id}-${profile.runtime_version}`}>
+          <p className="small muted">Qualified profiles apply to matching single-request windows.</p>
+          {saved.map((profile) => <div className="small" key={`${profile.runtime_id}-${profile.runtime_version}`}>
             {profile.runtime_id} {profile.runtime_version}: {profile.tuning.gpu_layers} GPU layers · micro-batch {profile.tuning.ubatch_size}
-            {profile.tuning.long && ` · long-context profile from ${profile.tuning.long.depth.toLocaleString()} tokens`}
-          </p>)}
+            {profile.tuning.qualification ? ` · qualified at ${profile.tuning.qualification.context_size.toLocaleString()} tokens · ${profile.tuning.profile?.kv_cache} KV cache` : " · legacy measurement, run Optimize speed to qualify"}
+            {profile.tuning.qualification && <details>
+              <summary>Saved benchmark evidence</summary>
+              <p>Single-slot requests with 64 generated tokens. Elapsed times in default and qualified order.</p>
+              <ul>{profile.tuning.qualification.pairs.map(([baseline, candidate], index) =>
+                <li key={index}>{baseline.toFixed(2)} s and {candidate.toFixed(2)} s ({(baseline / candidate).toFixed(3)}×)</li>)}</ul>
+            </details>}
+          </div>)}
           <button type="button" className="btn btn-ghost btn-sm" disabled={disabled || resetting} onClick={() => void forget()}>{resetting ? "Resetting…" : "Reset speed settings"}</button>
         </div>
       )}
@@ -185,84 +158,16 @@ export function TuneSpeed({ entry, disabled, onRunningChange, prominent = false 
           <p className="small">{tuneSummary(report)}</p>
           <details className="tune-details">
           <summary>Benchmark details and measured settings</summary>
-          {report.baseline !== null && (
-            <div className="table-wrap">
-              <table className="small tune-table" aria-label="Default and Raptor optimized speed comparison">
-                <thead>
-                  <tr><th>Configuration</th><th>Prompt</th><th>Generation</th><th>Time to first token</th></tr>
-                </thead>
-                <tbody>
-                  <tr>
-                    <th scope="row">Default</th>
-                    <td>{report.baseline_live ? tps(report.baseline_live.prompt_tps) : tps(report.baseline.prompt_tps)}</td>
-                    <td>{report.baseline_live ? tps(report.baseline_live.gen_tps) : tps(report.baseline.gen_tps)}</td>
-                    <td>{report.baseline_live ? formatTtft(report.baseline_live.ttft_ms) : "Not measured"}</td>
-                  </tr>
-                  <tr className="best">
-                    <th scope="row">Raptor optimized</th>
-                    <td>
-                      {report.best_live ? tps(report.best_live.prompt_tps) : tps(report.best.prompt_tps)}
-                      {report.baseline_live && report.best_live && (
-                        <span className="muted small"> ({percentChange(report.baseline_live.prompt_tps, report.best_live.prompt_tps)})</span>
-                      )}
-                    </td>
-                    <td>
-                      {report.best_live ? tps(report.best_live.gen_tps) : tps(report.best.gen_tps)}
-                      {report.baseline_live && report.best_live && (
-                        <span className="muted small"> ({percentChange(report.baseline_live.gen_tps, report.best_live.gen_tps)})</span>
-                      )}
-                    </td>
-                    <td>
-                      {report.best_live ? formatTtft(report.best_live.ttft_ms) : "Not measured"}
-                      {report.baseline_live && report.best_live && (
-                        <span className="muted small"> ({percentChange(report.baseline_live.ttft_ms, report.best_live.ttft_ms)})</span>
-                      )}
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
-              {report.baseline_live && report.best_live ? (
-                <p className="muted small">
-                  {entry.gguf?.quant_label ?? "Unknown quantization"} model on {report.gpu_name ?? "unknown GPU"}
-                  {report.gpu_driver ? ` (driver ${report.gpu_driver})` : " (driver unknown)"}; matched streamed requests on {report.runtime_id ?? "the selected runtime"} {report.runtime_version ?? ""}
-                  {report.backend ? ` (${report.backend.toUpperCase()})` : ""}, {report.context_size?.toLocaleString() ?? "same"} context,
-                  {report.baseline_live.prompt_tokens_exact ? " exact" : " estimated"} {report.baseline_live.prompt_tokens} prompt tokens,
-                  and a 64-token output limit. Values are medians after one warm-up and 3 measured samples per configuration.
-                  The percentage is candidate vs default; negative TTFT change is faster. KV cache {report.baseline_live.kv_cache},
-                  flash attention {report.baseline_live.flash_attn ? "on" : "off"}, speculation {report.baseline_live.speculative ? "on" : "off"}. Default used {report.baseline_live.gpu_layers} GPU layers and micro-batch {report.baseline_live.ubatch_size}; optimized used {report.best_live.gpu_layers} layers and micro-batch {report.best_live.ubatch_size}.
-                  {report.baseline_live.parallel_slots ? ` Both runs used ${report.baseline_live.parallel_slots} request slots.` : ""}
-                </p>
-              ) : (
-                <p className="muted small">
-                  The quick sweep uses 3 llama-bench repeats from an empty context, with the same cache and flash-attention mode as the default load, a 2,048-token prompt and 64-token reply. Long-context testing is a separate opt-in pass. TTFT needs a live
-                  streamed comparison and was not measured for this run; llama-bench does not report it. The default/optimized
-                  request-time estimate is {report.baseline.seconds.toFixed(1)} s / {report.best.seconds.toFixed(1)} s
-                  ({Math.round(report.improvement_percent)}% faster by the tuning score).
-                </p>
-              )}
-            </div>
-          )}
-          {longTuneSummary(report) !== null && <p className="small">{longTuneSummary(report)}</p>}
+          <p className="small">Each run uses one slot, {(report.context_size - report.output_tokens).toLocaleString()} fresh synthetic prompt tokens and {report.output_tokens} generated tokens. Times include the full completion request.</p>
           <table className="small tune-table" aria-label="Measured settings">
-            <thead>
-              <tr>
-                <th>GPU layers</th>
-                <th>Micro-batch</th>
-                <th>Prompt</th>
-                <th>Generation</th>
-              </tr>
-            </thead>
-            <tbody>
-              {report.results.map((m) => (
-                <tr key={`${m.gpu_layers}-${m.ubatch}`} className={m === report.results.find((x) => x.gpu_layers === report.best.gpu_layers && x.ubatch === report.best.ubatch) ? "best" : ""}>
-                  <td>{m.gpu_layers}</td>
-                  <td>{m.ubatch}</td>
-                  <td>{tps(m.prompt_tps)}</td>
-                  <td>{tps(m.gen_tps)}</td>
-                </tr>
-              ))}
-            </tbody>
+            <thead><tr><th>Setup</th><th>GPU layers</th><th>Micro-batch</th><th>KV cache</th><th>Request time</th></tr></thead>
+            <tbody>{report.results.map((trial, i) => <tr key={i}><th scope="row">{i === 0 ? "Default" : `Candidate ${i}`}</th><td>{trial.gpu_layers}</td><td>{trial.ubatch}</td><td>{trial.kv_cache}</td><td>{trial.seconds.toFixed(2)} s</td></tr>)}</tbody>
           </table>
+          {report.confirmation.length > 0 && <table className="small tune-table" aria-label="Independent confirmation">
+            <caption>Independent runs of the default and candidate {report.finalist}</caption>
+            <thead><tr><th>Pair</th><th>Default</th><th>Candidate</th><th>Speed ratio</th></tr></thead>
+            <tbody>{report.confirmation.map(([base, candidate], i) => <tr key={i}><td>{i + 1}</td><td>{base.toFixed(2)} s</td><td>{candidate.toFixed(2)} s</td><td>{(base / candidate).toFixed(3)}×</td></tr>)}</tbody>
+          </table>}
           {report.errors.map((e) => (
             <p key={e} className="small muted">
               Not measured: {e}
@@ -279,20 +184,14 @@ export function TuneSpeed({ entry, disabled, onRunningChange, prominent = false 
         onConfirm={() => void start()}
       >
         <p>
-          Raptor will try a few setups and save the fastest for this model on your PC. This takes a few minutes.
-          Keep Raptor open and pause other GPU-heavy work. When it finishes, load your model as usual; compatible saved
-          settings apply automatically.
-          Any loaded model is unloaded for the test. If this is the model you were using, Raptor loads it again when tuning finishes.
+          Raptor compares GPU settings at your configured context target, with a minimum of 65,536 tokens in one request slot.
+          The profile uses one slot on compatible loads. Candidates can change KV-cache precision while keeping the same model weights. Each candidate processes the entire prompt. On large models this can take hours. A profile is saved when three fresh matched runs each reach 1.50× baseline throughput.
+          Tuning unloads the current model and reloads it afterward if it was selected for this chat.
         </p>
         <label className="small">
-          <input type="checkbox" checked={deep} onChange={(e) => setDeep(e.target.checked)} /> Also tune for long
-          prompts
+          <input type="checkbox" checked={deep} onChange={(e) => setDeep(e.target.checked)} /> Extended search
         </label>
-        <p className="small muted">
-          Adds one more run for every setup measured above (usually two to four), each reading 16,384 tokens first, so it
-          takes noticeably longer. The progress bar counts every run. The result is used for context windows of 16,384
-          tokens or more; smaller windows keep the quick-tune setting.
-        </p>
+        <p className="small muted">Also try intermediate offload, micro-batches from 128 to 1,024, and 4-bit and 8-bit KV caches.</p>
       </ConfirmDialog>
     </div>
   );

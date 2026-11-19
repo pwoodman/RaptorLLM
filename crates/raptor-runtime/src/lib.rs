@@ -28,7 +28,7 @@ pub mod verify;
 mod testing;
 
 use crate::config::{
-    recommend, recommend_with_arch, LaunchConfig, ModelArch, ModelMeta, Recommendation,
+    recommend, recommend_with_arch_and_floor, LaunchConfig, ModelArch, ModelMeta, Recommendation,
 };
 use crate::devices::{launch_env, DevicePreflight, HipSdkSearch};
 use crate::fit::{FitProjection, FIT_PARAMS_BINARY};
@@ -438,6 +438,18 @@ impl RuntimeEngine {
         ctx_target: u32,
         projection: Option<&FitProjection>,
     ) -> Result<Recommendation> {
+        self.recommend_config_with_floor(model, arch, ctx_target, 0, projection)
+    }
+
+    /// Like `recommend_config_with_arch`, with a context floor the planner must retain.
+    pub fn recommend_config_with_floor(
+        &self,
+        model: &ModelMeta,
+        arch: &ModelArch,
+        ctx_target: u32,
+        minimum: u32,
+        projection: Option<&FitProjection>,
+    ) -> Result<Recommendation> {
         let state = lock(&self.state);
         let hw = state.hardware.as_ref().ok_or_else(|| {
             RaptorError::Conflict("hardware not detected; call detect_hardware first".into())
@@ -445,7 +457,15 @@ impl RuntimeEngine {
         let active = state.runtime.as_ref().ok_or_else(|| {
             RaptorError::Conflict("no runtime selected; call ensure_runtime first".into())
         })?;
-        recommend_with_arch(hw, model, arch, ctx_target, active.backend, projection)
+        recommend_with_arch_and_floor(
+            hw,
+            model,
+            arch,
+            ctx_target,
+            minimum,
+            active.backend,
+            projection,
+        )
     }
 
     /// Asks llama.cpp for its own memory projection for `config` with every layer on

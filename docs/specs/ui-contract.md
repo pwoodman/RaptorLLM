@@ -110,7 +110,7 @@ the same options are given explicitly.
 | `settings_set_gateway_port` | `port` | `SettingsView` | Applied live. Reverted if the gateway refuses it. |
 | `settings_set_gateway_enabled` | `enabled` | `GatewayStatus` | |
 | `settings_set_lan` | `enabled` | `SettingsView` | `true` is refused with `Unauthorized` unless an API key exists. |
-| `settings_set_context_target` | `tokens` (65536-200000) | `SettingsView` | Target; effective load context can be lower when model or hardware limits apply. |
+| `settings_set_context_target` | `tokens` (65536-200000) | `SettingsView` | Target. Chat loads require at least 65,536 context tokens. The effective window above that floor depends on model and hardware limits. |
 | `settings_set_allow_cpu_fallback` | `enabled` | `SettingsViewV2` | Off by default. On: a load whose GPU backend has no device runs on CPU, and the result has `cpu_fallback: true`. `SettingsViewV2` adds `embedding_model` and `allow_cpu_fallback` to `SettingsView`. |
 | `api_key_rotate` | - | `ApiKeyReveal` | Creates or replaces the key. Show the secret once. |
 | `api_key_revoke` | - | `SettingsView` | Refused with `Unauthorized` while LAN is enabled. |
@@ -121,7 +121,7 @@ the same options are given explicitly.
 
 | Command | Args | Returns | Notes |
 |---|---|---|---|
-| `chat_start` | `requestId`, `messages`, `options?` (`temperature`, `max_tokens`, `preset`, `top_p`, `top_k`, `repeat_penalty`; see Presets) | `void` | Subscribe to `chat://<requestId>` first. The same stream runs for the command and for the gate test. Refused with `Conflict` when no model is loaded. |
+| `chat_start` | `requestId`, `messages`, `options?` (`temperature`, `max_tokens`, `preset`, `top_p`, `top_k`, `repeat_penalty`; see Presets) | `void` | Subscribe to `chat://<requestId>` first. Chat reserves reply space and can omit whole prior turns or completed tool exchanges. The stored conversation retains them. Reply stats report the number omitted. Refused with `Conflict` when no model is loaded. |
 | `chat_cancel` | `requestId` | `boolean` | `false` when the request is not running. |
 
 `requestId`: 1-64 characters, letters, digits, `-` or `_`.

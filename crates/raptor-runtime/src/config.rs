@@ -15,6 +15,8 @@ use std::path::PathBuf;
 
 pub const MIB: u64 = 1024 * 1024;
 pub const GIB: u64 = 1024 * MIB;
+/// Minimum desktop chat context on models that support long context.
+pub const LONG_CHAT_CONTEXT: u32 = 65_536;
 
 /// Estimated scratch/compute buffers per GPU model load. Not measured.
 const COMPUTE_OVERHEAD: u64 = 384 * MIB;
@@ -298,6 +300,10 @@ impl LaunchConfig {
         if let Some(n) = self.parallel_slots {
             let at = args.len() - 2;
             args.splice(at..at, ["-np".to_string(), n.to_string()]);
+            if n > 1 && self.ctx_size >= LONG_CHAT_CONTEXT && !self.embeddings {
+                // With separate caches llama-server divides -c by -np.
+                args.insert(args.len() - 2, "--kv-unified".into());
+            }
         }
         if let Some(n) = self.threads_batch {
             let at = args.len() - 2;
@@ -564,7 +570,7 @@ impl Costs {
 
 /// Largest context (a multiple of `CTX_STEP`, at most `cap`) for `k` layers on the
 /// device within `vram_budget`. `None` when it is below the context floor.
-fn max_ctx_for(c: &Costs, k: u64, vram_budget: u64, cap: u32) -> Option<u32> {
+fn max_ctx_for(c: &Costs, k: u64, vram_budget: u64, cap: u32, floor: u64) -> Option<u32> {
     if k == 0 || k > c.layers {
         return None;
     }
@@ -572,7 +578,7 @@ fn max_ctx_for(c: &Costs, k: u64, vram_budget: u64, cap: u32) -> Option<u32> {
     let per_token_num = k * c.kv_per_token;
     let ctx = (left.saturating_mul(c.layers) / per_token_num.max(1)).min(u64::from(cap));
     let ctx = round_down_step(ctx);
-    if ctx >= ctx_floor(cap) && ctx > 0 {
+    if ctx >= floor && ctx > 0 {
         Some(ctx as u32)
     } else {
         None
@@ -583,12 +589,18 @@ fn max_ctx_for(c: &Costs, k: u64, vram_budget: u64, cap: u32) -> Option<u32> {
 /// reduced as needed. Failing that, it offloads the most layers that still allow the
 /// context floor, keeps the rest in RAM, and requires that RAM to hold them. Returns
 /// `None` when neither fits.
-fn plan_gpu(c: &Costs, vram_budget: u64, ram_budget: u64, cap: u32) -> Option<(u32, u32)> {
-    if let Some(ctx) = max_ctx_for(c, c.layers, vram_budget, cap) {
+fn plan_gpu(
+    c: &Costs,
+    vram_budget: u64,
+    ram_budget: u64,
+    cap: u32,
+    floor: u64,
+) -> Option<(u32, u32)> {
+    if let Some(ctx) = max_ctx_for(c, c.layers, vram_budget, cap, floor) {
         return Some((c.layers as u32, ctx));
     }
     (1..c.layers).rev().find_map(|k| {
-        let ctx = max_ctx_for(c, k, vram_budget, cap)?;
+        let ctx = max_ctx_for(c, k, vram_budget, cap, floor)?;
         (c.ram(k, u64::from(ctx)) <= ram_budget).then_some((k as u32, ctx))
     })
 }
@@ -699,6 +711,20 @@ pub fn recommend_with_arch(
     backend: Backend,
     fit: Option<&FitProjection>,
 ) -> Result<Recommendation> {
+    recommend_with_arch_and_floor(hw, model, arch, ctx_target, 0, backend, fit)
+}
+
+/// Recommends a configuration that can hold at least `minimum` tokens.
+pub fn recommend_with_arch_and_floor(
+    hw: &HardwareInfo,
+    model: &ModelMeta,
+    arch: &ModelArch,
+    ctx_target: u32,
+    minimum: u32,
+    backend: Backend,
+    fit: Option<&FitProjection>,
+) -> Result<Recommendation> {
+    let ctx_target = ctx_target.max(minimum);
     validate_model(model, ctx_target)?;
     validate_arch(arch)?;
     let mut rationale = Vec::new();
@@ -711,6 +737,12 @@ pub fn recommend_with_arch(
     } else {
         ctx_target
     };
+    if cap < minimum {
+        return Err(RaptorError::Unsupported(format!(
+            "the model supports {cap} context tokens but this load needs at least {minimum}"
+        )));
+    }
+    let floor = ctx_floor(cap).max(u64::from(minimum));
     let threads = hw.cpu.cores.max(1);
     let ram_reserve = headroom(hw.ram_total);
     let ram_budget = hw.ram_avail.saturating_sub(ram_reserve);
@@ -735,10 +767,10 @@ pub fn recommend_with_arch(
                 ))
             })?;
         let ctx = round_down_step((left / all_kv_per_token.max(1)).min(u64::from(cap)));
-        if ctx < ctx_floor(cap) {
-            return Err(RaptorError::Runtime(
-                "not enough RAM for the model plus a minimal KV cache".into(),
-            ));
+        if ctx < floor {
+            return Err(RaptorError::Runtime(format!(
+                "not enough RAM for the model plus a {floor}-token KV cache"
+            )));
         }
         if ctx < u64::from(cap) {
             rationale.push(format!(
@@ -858,7 +890,12 @@ pub fn recommend_with_arch(
     };
     let plans: Vec<(KvCacheType, Option<(u32, u32)>)> = kv_candidates
         .iter()
-        .map(|&kv| (kv, plan_gpu(&costs_for(kv), vram_budget, ram_budget, cap)))
+        .map(|&kv| {
+            (
+                kv,
+                plan_gpu(&costs_for(kv), vram_budget, ram_budget, cap, floor),
+            )
+        })
         .collect();
     let most_layers = plans
         .iter()
@@ -925,7 +962,7 @@ pub fn recommend_with_arch(
          Choose a smaller quantization, or select the CPU runtime explicitly. \
          Raptor LLM will not fall back to CPU silently.",
         vram_budget / MIB,
-        ctx_floor(cap)
+        floor
     )))
 }
 
@@ -1022,6 +1059,29 @@ mod tests {
         hw.gpus[0].vram_total = total;
         hw.gpus[0].vram_free = Some(free);
         hw
+    }
+
+    #[test]
+    fn a_chat_floor_trades_off_gpu_layers_and_keeps_the_slot_window() {
+        let model = ModelMeta {
+            n_ctx_train: 131_072,
+            ..model_8b()
+        };
+        let recommendation = recommend_with_arch_and_floor(
+            &hw_rx9060(Some(11 * 1024)),
+            &model,
+            &ModelArch::dense(&model),
+            8192,
+            LONG_CHAT_CONTEXT,
+            Backend::Hip,
+            None,
+        )
+        .unwrap();
+        let mut config = recommendation.config;
+        assert_eq!(config.ctx_size, LONG_CHAT_CONTEXT);
+        assert!(config.gpu_layers < model.n_layers);
+        config.parallel_slots = Some(2);
+        assert!(config.args().iter().any(|arg| arg == "--kv-unified"));
     }
 
     #[test]

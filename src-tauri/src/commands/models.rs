@@ -450,17 +450,19 @@ pub async fn models_load_progress(
     Ok(state.load_progress())
 }
 
-/// Measures a model with llama-bench and saves the fastest layer count and micro-batch for it, so
-/// every later load uses them. Takes a few minutes. The model must not be loaded. With `deep`
-/// it also measures every setup with 16,384 tokens of context and saves a long-prompt setting for
-/// windows of that size or more (several minutes longer; progress counts both passes).
+/// Qualifies single-slot speed settings with matched full-window completions.
+/// The extended search also sweeps intermediate offload and additional micro-batches.
 #[tauri::command]
 pub async fn models_tune(
     state: State<'_, AppState>,
     model_id: String,
     deep: Option<bool>,
+    context: Option<u32>,
+    preset: Option<String>,
 ) -> Result<crate::state::TuneReport> {
-    state.tune_model(&model_id, deep.unwrap_or(false)).await
+    state
+        .tune_model_at(&model_id, deep.unwrap_or(false), context, preset.as_deref())
+        .await
 }
 
 /// `{done, total}` steps of the tuning run in progress; `{0, 0}` when none is running.

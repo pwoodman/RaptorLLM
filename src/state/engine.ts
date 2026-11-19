@@ -143,7 +143,7 @@ export async function loadModel(
       engineStore.set({ status, loaded: null, loadReport: null });
       tuningStore.set({ activeId: modelId, startedAt: Date.now() });
       try {
-        const report = await api.models.tune(modelId, false);
+        const report = await api.models.tune(modelId, false, window?.ctx ?? null, preset);
         tuningStore.set((state) => ({ reports: { ...state.reports, [modelId]: report } }));
         rememberOptimizationOffer(entry);
       } finally {

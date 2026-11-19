@@ -64,7 +64,6 @@ export function SetupGuide({ onModelAction }: { onModelAction?: (action: "discov
   const nextCheck = (["hardware", "storage", "runtime", "model", "gpu"] as const)
     .map((id) => byId.get(id))
     .find((check) => check && !check.ok);
-  if (!nextCheck) return null;
 
   return (
     <Panel
@@ -78,18 +77,20 @@ export function SetupGuide({ onModelAction }: { onModelAction?: (action: "discov
           {data.selected_runtime.reason}
         </Notice>
       )}
-      <div className="setup-next-step">
-        <span className="setup-step-label">Your next step</span>
-        <h3>{stepTitle(nextCheck.id)}</h3>
-        <p className="muted small">{stepHelp(nextCheck, data)}</p>
-        <ActionFor
-          check={nextCheck}
-          data={data}
-          onChanged={setup.reload}
-          onModelsPage={page === "models"}
-          onModelAction={onModelAction}
-        />
-      </div>
+      {nextCheck && (
+        <div className="setup-next-step">
+          <span className="setup-step-label">Your next step</span>
+          <h3>{stepTitle(nextCheck.id)}</h3>
+          <p className="muted small">{stepHelp(nextCheck, data)}</p>
+          <ActionFor
+            check={nextCheck}
+            data={data}
+            onChanged={setup.reload}
+            onModelsPage={page === "models"}
+            onModelAction={onModelAction}
+          />
+        </div>
+      )}
       <details className="setup-details">
         <summary>See all setup details</summary>
         <ol className="setup-list">
@@ -101,6 +102,7 @@ export function SetupGuide({ onModelAction }: { onModelAction?: (action: "discov
               onChanged={setup.reload}
               onModelsPage={page === "models"}
               onModelAction={onModelAction}
+              hasStepAbove={check.id === nextCheck?.id}
             />
           ))}
         </ol>
@@ -144,9 +146,18 @@ interface SetupItemProps {
   onChanged: () => void;
   onModelsPage: boolean;
   onModelAction?: (action: "discover" | "library") => void;
+  /** The same check is the panel's "next step" above, so repeating the action here duplicates it. */
+  hasStepAbove: boolean;
 }
 
-function SetupItem({ check, data, onChanged, onModelsPage, onModelAction }: SetupItemProps) {
+function SetupItem({
+  check,
+  data,
+  onChanged,
+  onModelsPage,
+  onModelAction,
+  hasStepAbove,
+}: SetupItemProps) {
   const Icon = ICONS[check.id];
   const StatusIcon = check.ok ? CheckCircle2 : CircleAlert;
   const tone = check.ok ? "tone-ok" : "tone-warn";
@@ -162,7 +173,7 @@ function SetupItem({ check, data, onChanged, onModelsPage, onModelAction }: Setu
       </div>
       <div className="setup-item-body">
         <p className="muted small">{detailFor(check, data)}</p>
-        {!check.ok && (
+        {!check.ok && !hasStepAbove && (
           <ActionFor
             check={check}
             data={data}
@@ -189,7 +200,13 @@ function detailFor(check: SetupCheck, data: SetupStatus): string {
   return check.detail;
 }
 
-function ActionFor({ check, data, onChanged, onModelsPage, onModelAction }: SetupItemProps) {
+function ActionFor({
+  check,
+  data,
+  onChanged,
+  onModelsPage,
+  onModelAction,
+}: Omit<SetupItemProps, "hasStepAbove">) {
   switch (check.id) {
     case "runtime":
       if (data.runtime_needs_confirmation && data.available_runtime) {

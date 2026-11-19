@@ -12,6 +12,8 @@ use std::path::{Path, PathBuf};
 /// The settings tuning chose, and the evidence for them.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TunedEntry {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub qualification: Option<Qualification>,
     pub gpu_layers: u32,
     pub ubatch_size: u32,
     pub prompt_tps: f64,
@@ -34,6 +36,27 @@ pub struct TunedEntry {
     /// before deep tuning existed, and when only the quick tune was run.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub long: Option<LongTuned>,
+}
+
+/// Independent full-window confirmations in (baseline seconds, candidate seconds) order.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Qualification {
+    pub context_size: u32,
+    pub signature: String,
+    pub pairs: Vec<(f64, f64)>,
+}
+
+impl Qualification {
+    pub fn passed(&self) -> bool {
+        self.context_size >= crate::settings::MIN_CONTEXT_TARGET
+            && self.pairs.len() == 3
+            && self.pairs.iter().all(|&(base, candidate)| {
+                base.is_finite()
+                    && candidate.is_finite()
+                    && candidate > 0.0
+                    && base >= candidate * 1.5
+            })
+    }
 }
 
 /// Median metrics from repeated, warmed-up streamed requests on one launch configuration.
@@ -257,6 +280,7 @@ mod tests {
 
     fn entry(ub: u32) -> TunedEntry {
         TunedEntry {
+            qualification: None,
             gpu_layers: 41,
             ubatch_size: ub,
             prompt_tps: 2234.7,
@@ -272,6 +296,23 @@ mod tests {
             best_live: None,
             long: None,
         }
+    }
+
+    #[test]
+    fn qualification_requires_every_pair_and_the_hard_floor() {
+        let mut proof = Qualification {
+            context_size: 65536,
+            signature: "config".into(),
+            pairs: vec![(15.0, 10.0); 3],
+        };
+        assert!(proof.passed());
+        proof.context_size -= 1;
+        assert!(!proof.passed());
+        proof.context_size += 1;
+        proof.pairs[2].0 = 14.999;
+        assert!(!proof.passed());
+        proof.pairs.pop();
+        assert!(!proof.passed());
     }
 
     fn long(ub: u32) -> LongTuned {

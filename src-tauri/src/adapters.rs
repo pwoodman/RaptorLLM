@@ -36,6 +36,10 @@ use std::time::Instant;
 pub trait ServerProbe: Send + Sync {
     /// `Some` only while the server is ready or degraded-but-serving.
     fn endpoint(&self) -> Option<String>;
+
+    fn logged_context_window(&self) -> Option<u32> {
+        None
+    }
 }
 
 /// Lists the model ids installed in the library.
@@ -50,6 +54,17 @@ impl ServerProbe for RuntimeEngine {
             ServerState::Ready | ServerState::Degraded { .. } => status.server.endpoint,
             _ => None,
         }
+    }
+
+    fn logged_context_window(&self) -> Option<u32> {
+        self.log_tail(600).iter().rev().find_map(|line| {
+            let (_, value) = line.text.split_once("n_ctx_slot = ")?;
+            value
+                .split(|c: char| !c.is_ascii_digit())
+                .next()?
+                .parse()
+                .ok()
+        })
     }
 }
 
@@ -89,6 +104,14 @@ impl RuntimeUpstream {
     /// (`/props`). Called after a load, because a new model can be served at the same endpoint.
     pub fn forget_server_facts(&self) {
         *lock(&self.cache) = None;
+    }
+
+    pub async fn context_window(&self) -> Option<u32> {
+        self.active()
+            .ok()??
+            .context_window()
+            .await
+            .or_else(|| self.server.logged_context_window())
     }
 
     /// Production wiring: loopback `HttpUpstream` per endpoint.
@@ -171,18 +194,41 @@ impl Upstream for RuntimeUpstream {
         }
     }
 
+    async fn chat_prompt_tokens(&self, body: &Value) -> Option<u64> {
+        self.active().ok()??.chat_prompt_tokens(body).await
+    }
+
     async fn call(&self, endpoint: Endpoint, body: Value) -> Result<Completion> {
         let Some(up) = self.active()? else {
             return Err(RaptorError::Conflict(
                 "no model is loaded; load one from the Models page first".into(),
             ));
         };
-        let installed = self.library.installed_ids()?;
         let started = Instant::now();
+        let (body, omitted) = if endpoint == Endpoint::ChatCompletions {
+            match up
+                .context_window()
+                .await
+                .or_else(|| self.server.logged_context_window())
+            {
+                Some(window) if window < crate::settings::MIN_CONTEXT_TARGET => {
+                    return Err(RaptorError::Unsupported(format!(
+                        "The runtime offers {window} context tokens. Chat requires at least {}.",
+                        crate::settings::MIN_CONTEXT_TARGET
+                    )));
+                }
+                Some(window) => crate::chat_context::fit(up.as_ref(), body, window).await?,
+                None => (body, 0),
+            }
+        } else {
+            (body, 0)
+        };
+        let installed = self.library.installed_ids()?;
         Ok(match up.call(endpoint, body).await? {
             Completion::Json(mut v) => {
                 scrub_model_field(&installed, &mut v);
                 attach_speed(&mut v, None);
+                attach_omitted_history(&mut v, omitted);
                 Completion::Json(v)
             }
             Completion::Stream(s) => {
@@ -198,6 +244,11 @@ impl Upstream for RuntimeUpstream {
                                 *first = Some(started.elapsed().as_secs_f64() * 1000.0);
                             }
                             attach_speed(&mut v, *first);
+                            if v.get("timings").is_some()
+                                || v["choices"][0]["finish_reason"].is_string()
+                            {
+                                attach_omitted_history(&mut v, omitted);
+                            }
                             v.to_string()
                         }
                         Err(_) => payload,
@@ -205,6 +256,12 @@ impl Upstream for RuntimeUpstream {
                 })))
             }
         })
+    }
+}
+
+fn attach_omitted_history(body: &mut Value, omitted: usize) {
+    if omitted > 0 {
+        body["raptor"]["omitted_history_turns"] = json!(omitted);
     }
 }
 
