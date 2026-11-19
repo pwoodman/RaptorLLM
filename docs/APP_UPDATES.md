@@ -32,6 +32,8 @@ the trust anchor for both manual and automatic updates.
 
 ## Publish an existing locally signed build
 
+When the repository has no Actions signing secret, pushing a matching version tag stages unsigned Windows installers as workflow artifacts. Sign them locally with the existing updater key before generating the update manifest and publishing the release.
+
 Pushing a branch or building installers locally does not publish an update. The configured
 `releases/latest/download/latest.json` endpoint exists only after a non-draft, non-prerelease
 GitHub Release includes that asset. Every update also needs a higher app version than the
