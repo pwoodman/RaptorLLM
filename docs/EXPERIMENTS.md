@@ -558,3 +558,46 @@ file) and ordinary prose/code prompts, IQ2_XXS target unless stated:
 - `src/components/models/DiscoverTab.tsx`: the recommendation notice says what the rule is now.
 - The runtime manifest is unchanged: b12528 is a prerelease and at most 1.6% faster, so the
   patched b12374 build stays the reference runtime.
+
+## N-gram mode head-to-head on the models the app ships (2026-11-19, RX 9060 XT 16 GB, ROCm build b12374-patched, temperature 0.6, seed 470, 256-token replies, `-np 1 -c 8192 -ub 256`, IQ3 quants, first pass each)
+
+The IQ2_XXS head-to-head above was run on one dense 33B file. This reruns it on the two
+models the app can actually serve on this card today: Granite 4.2 30B dense (IQ3_M) and
+Ornith 1.5 35B-A3B sparse MoE (IQ3_S/IQ3_XXS), with the same five prompts used for the
+Nanbeige sweep below (`code`, `prose`, `chat`, `report`, plus a new `rewrite` prompt: add doc
+comments to a Rust module, answer repeats the prompt).
+
+| Workload | Granite ngram-mod | Granite ngram-simple | Ornith ngram-mod | Ornith ngram-simple |
+|---|---|---|---|---|
+| Whole-file `rewrite` (Rust) | 19.92 tok/s | 19.89 tok/s (2/48 drafts accepted) | 76.59 tok/s (40% drafts accepted) | **92.50 tok/s (64% accepted)** |
+| New `code` | 20.19 | 20.15 | **63.61** | 61.78 |
+| `prose` | 20.18 | 20.17 | **63.86** | 46.53 |
+| `chat` | 20.20 | 20.20 | **63.13** | 40.16 |
+| `report` | **20.16** | 12.89 (rerun: 13.68) | **63.65** | 34.19 |
+
+Granite is prompt-eval bound at ~20 tok/s and neither mode moves it; the `report` prompt is
+~2-3.5x slower to read with ngram-simple in two runs (415→109/108 prompt tok/s on the rerun),
+which is the one anomaly of the day and not reproduced on the other four prompts. On Ornith,
+`ngram-simple` is 21% faster on the rewrite-style prompt and 26-46% slower on everything else,
+matching the earlier observation that it only pays off when the answer echoes the prompt.
+
+- **WORKS: `ngram-mod` stays the app's `ngram` mode.** No change. The one regime where
+  `ngram-simple` wins (verbatim copying) is what the DFlash2/MTP stacks already exploit.
+- **REJECTED: switching the default to `ngram-simple`.** It is a REGRESSION on three of five
+  Ornith workloads (prose -27%, chat -36%, report -46%) and never wins on Granite.
+- **UNTESTED: repetition-heavy MoE at very long context.** All five prompts are ≤ 2K tokens;
+  whether `ngram-simple` acceptance grows enough at ≥ 32K to flip the table is unknown.
+- The `bench_spec.py` prompt set gained the `rewrite` task; `results/*.log` holds the raw
+  per-task lines. Run-to-run variance of ±40% on prompt-eval throughput was observed on a
+  busy machine; treat single-digit decode differences as noise.
+
+## What changed in Raptor because of this (2026-11-19)
+
+- Benchmark visibility: benchmark records now carry prompt/generated token counts, the
+  history table shows a run-vs-best column and a token summary, `BenchmarkResult` prints the
+  prompt/completion tokens, and the context-length matrix gained per-row "% of empty-context"
+  generation, a plain-English comfort summary, and a Copy-as-Markdown export.
+- Default chat context target raised from 65,536 to 122,880 tokens ("120K ideal"). The 65,536
+  floor is unchanged: the recommender shrinks the window, never below the floor, when the
+  model or the hardware cannot hold the new default. No measured speed data yet — the change
+  is a default-policy change, not a measurement.

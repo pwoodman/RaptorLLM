@@ -475,6 +475,9 @@ kbd { font: 12px var(--mono); border: 1px solid var(--border); border-bottom-wid
 .matrix-table th, .matrix-table td { padding: 2px 12px 2px 0; text-align: left; white-space: nowrap; }
 .matrix-table tr.matrix-spilled td { color: var(--warn, #e0b341); }
 .matrix-table tr.matrix-skipped td { opacity: 0.8; }
+.matrix-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.matrix-header p { margin: 0; }
+.matrix-summary { margin: 2px 0 4px; color: var(--text-strong, inherit); }
 .backend-choice { margin-top: 4px; }
 
 /* Thinking effort selector in the composer */

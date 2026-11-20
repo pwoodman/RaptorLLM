@@ -145,8 +145,14 @@ function History({ entries, modelName }: { entries: PerfEntry[]; modelName: stri
   if (entries.length === 0) {
     return <p className="muted small">No benchmark records for {modelName} yet.</p>;
   }
+  const best = entries.reduce((m, e) => (e.record.stable && e.record.gen_tps > m ? e.record.gen_tps : m), 0);
+  const stable = entries.filter((e) => e.record.stable).length;
   return (
     <div className="table-wrap">
+      <p className="muted small">
+        {entries.length} {entries.length === 1 ? "run" : "runs"} · {stable} stable
+        {best > 0 ? ` · best ${best.toFixed(1)} tok/s generation` : " · none stable yet"}
+      </p>
       <table className="data-table perf-table">
         <caption className="sr-only">Benchmark runs for {modelName}, newest first</caption>
         <thead>
@@ -157,6 +163,7 @@ function History({ entries, modelName }: { entries: PerfEntry[]; modelName: stri
             <th scope="col">First token</th>
             <th scope="col">Prompt</th>
             <th scope="col">Generation</th>
+            <th scope="col">vs best</th>
             <th scope="col">VRAM</th>
             <th scope="col">Status</th>
           </tr>
@@ -183,11 +190,23 @@ function History({ entries, modelName }: { entries: PerfEntry[]; modelName: stri
                   {r.runtime_id} {r.runtime_version}
                   <div className="muted small">{hardware}</div>
                   <div className="muted small">{acceleration}</div>
+                  {(r.prompt_tokens > 0 || r.gen_tokens > 0) && (
+                    <div className="muted small" title="Prompt tokens processed · tokens generated (averaged over merged runs)">
+                      {r.prompt_tokens} in · {r.gen_tokens} out
+                    </div>
+                  )}
                 </td>
                 <td>{r.config.gpu_layers}</td>
                 <td>{formatMs(r.ttft_ms)}</td>
                 <td>{formatTps(r.prompt_tps)}</td>
                 <td>{formatTps(r.gen_tps)}</td>
+                <td className="num">
+                  {!r.stable || best <= 0
+                    ? "—"
+                    : (best - r.gen_tps) < 0.005 * best
+                      ? "best"
+                      : `${(((r.gen_tps - best) / best) * 100).toFixed(1)}%`}
+                </td>
                 <td>{r.vram_bytes > 0 ? formatBytes(r.vram_bytes) : "Unknown"}</td>
                 <td>
                   {r.stable ? (

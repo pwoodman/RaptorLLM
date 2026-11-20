@@ -282,9 +282,17 @@ pub fn build_record(
     stable: bool,
     measured_at: u64,
 ) -> BenchRecord {
-    let (ttft_ms, prompt_tps, gen_tps) = sample
-        .map(|s| (s.ttft_ms, s.prompt_tps, s.gen_tps))
-        .unwrap_or((0.0, 0.0, 0.0));
+    let (ttft_ms, prompt_tps, gen_tps, prompt_tokens, gen_tokens) = sample
+        .map(|s| {
+            (
+                s.ttft_ms,
+                s.prompt_tps,
+                s.gen_tps,
+                s.prompt_tokens,
+                s.gen_tokens,
+            )
+        })
+        .unwrap_or((0.0, 0.0, 0.0, 0, 0));
     BenchRecord {
         machine: machine_fingerprint(hw),
         model_hash: model_sha256.to_string(),
@@ -297,6 +305,8 @@ pub fn build_record(
         ttft_ms,
         prompt_tps,
         gen_tps,
+        prompt_tokens,
+        gen_tokens,
         vram_bytes: memory.0,
         ram_bytes: memory.1,
         stable,

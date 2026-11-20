@@ -79,6 +79,12 @@ pub struct BenchRecord {
     pub ttft_ms: f64,
     pub prompt_tps: f64,
     pub gen_tps: f64,
+    /// Prompt tokens the run processed. Absent (0) in records written before this field existed.
+    #[serde(default)]
+    pub prompt_tokens: u64,
+    /// Tokens the run generated. Absent (0) in records written before this field existed.
+    #[serde(default)]
+    pub gen_tokens: u64,
     pub vram_bytes: u64,
     pub ram_bytes: u64,
     /// True when the run finished without crashes, timeouts or GPU fallback.
@@ -281,6 +287,10 @@ impl PerfStore {
                 e.ttft_ms = weighted(e.ttft_ms, na, run.ttft_ms, nb);
                 e.prompt_tps = weighted(e.prompt_tps, na, run.prompt_tps, nb);
                 e.gen_tps = weighted(e.gen_tps, na, run.gen_tps, nb);
+                e.prompt_tokens = weighted(e.prompt_tokens as f64, na, run.prompt_tokens as f64, nb)
+                    .round() as u64;
+                e.gen_tokens =
+                    weighted(e.gen_tokens as f64, na, run.gen_tokens as f64, nb).round() as u64;
                 e.vram_bytes = e.vram_bytes.max(run.vram_bytes);
                 e.ram_bytes = e.ram_bytes.max(run.ram_bytes);
                 e.stable = e.stable || run.stable;
@@ -366,6 +376,8 @@ mod tests {
             ttft_ms: 300.0,
             prompt_tps: 900.0,
             gen_tps: gen,
+            prompt_tokens: 512,
+            gen_tokens: 64,
             vram_bytes: 10 << 30,
             ram_bytes: 2 << 30,
             stable,
@@ -415,6 +427,8 @@ mod tests {
         );
         assert_eq!(s.records().len(), 1);
         assert!((s.records()[0].gen_tps - 65.0).abs() < 1e-9);
+        assert_eq!(s.records()[0].prompt_tokens, 512);
+        assert_eq!(s.records()[0].gen_tokens, 64);
     }
 
     #[test]

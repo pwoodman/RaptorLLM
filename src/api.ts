@@ -1093,6 +1093,10 @@ export interface BenchRecord {
   gen_tps: number;
   vram_bytes: number;
   ram_bytes: number;
+  /** Prompt tokens processed in the run (merged average across runs). 0 for records from before this field existed. */
+  prompt_tokens: number;
+  /** Tokens generated in the run (merged average across runs). 0 for records from before this field existed. */
+  gen_tokens: number;
   /** False for runs that crashed, timed out, lacked verified GPU offload or failed. */
   stable: boolean;
   samples: number;

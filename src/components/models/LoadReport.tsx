@@ -125,6 +125,14 @@ export function BenchmarkResult({ outcome, optimized = false }: { outcome: Bench
             <dt>Generation speed</dt>
             <dd className={optimized ? "optimized-speed" : undefined}>{formatTps(record.gen_tps)}</dd>
           </div>
+          {(record.prompt_tokens > 0 || record.gen_tokens > 0) && (
+            <div>
+              <dt>Tokens</dt>
+              <dd title="Prompt tokens sent and tokens generated during the benchmark">
+                {record.prompt_tokens.toFixed(0)} in · {record.gen_tokens.toFixed(0)} out
+              </dd>
+            </div>
+          )}
           <div>
             <dt>Status</dt>
             <dd>

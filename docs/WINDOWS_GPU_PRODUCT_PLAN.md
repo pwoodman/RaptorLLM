@@ -77,8 +77,9 @@ once more than one backend is available. It must not silently switch to CPU.
 ### Coding-agent context profile
 
 Treat agent context as a workload budget, separate from the model's advertised maximum and from the
-VRAM-fit context recommendation used for ordinary chat. Set the coding-agent target minimum and
-default to **65,536 tokens**, with a hard setting ceiling of **200,000 tokens**. The effective
+VRAM-fit context recommendation used for ordinary chat. Set the coding-agent target minimum
+to **65,536 tokens** and the default target to **122,880 tokens** ("120K ideal"), with a hard
+setting ceiling of **200,000 tokens**. The effective
 context remains capped by the model's trained length and measured hardware fit; report explicitly
 when it falls below 65,536. Offer larger windows through 200K when supported. Keep lightweight
 chat/code questions available below that floor, but explain that multi-step repository work may

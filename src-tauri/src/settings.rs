@@ -18,8 +18,12 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 pub const SETTINGS_VERSION: u32 = 3;
+/// What a fresh install targets for chat: 120K tokens when the hardware can hold
+/// it, at least `MIN_CONTEXT_TARGET` otherwise. The recommender shrinks the window
+/// to what fits (never below the floor) per model and machine.
+pub const IDEAL_CONTEXT_TARGET: u32 = 122_880;
 /// Models with native long context reserve at least this many tokens for chat.
-pub const DEFAULT_CONTEXT_TARGET: u32 = MIN_CONTEXT_TARGET;
+pub const DEFAULT_CONTEXT_TARGET: u32 = IDEAL_CONTEXT_TARGET;
 pub const MIN_CONTEXT_TARGET: u32 = raptor_runtime::config::LONG_CHAT_CONTEXT;
 pub const MAX_CONTEXT_TARGET: u32 = 200_000;
 pub const MAX_EMBEDDING_MODEL_ID_BYTES: usize = 512;
@@ -559,13 +563,15 @@ mod tests {
         let old_large = parse_settings(br#"{"version":2,"context_target":262144}"#).unwrap();
         assert_eq!(old_large.0.context_target, MAX_CONTEXT_TARGET);
         assert!(old_large.1.as_deref().is_some_and(|n| n.contains("262144")));
-        assert_eq!(Settings::default().context_target, 65_536);
+        assert_eq!(Settings::default().context_target, 122_880);
     }
 
     #[test]
     fn context_target_boundary_is_200000_tokens() {
-        let mut settings = Settings::default();
-        settings.context_target = 200_000;
+        let mut settings = Settings {
+            context_target: 200_000,
+            ..Settings::default()
+        };
         assert!(settings.validate().is_ok());
         settings.context_target += 1;
         assert!(settings.validate().is_err());

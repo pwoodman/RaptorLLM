@@ -234,6 +234,11 @@ mod platform {
     }
 
     #[cfg(test)]
+    pub fn job_handle_for_tests() -> std::result::Result<HANDLE, String> {
+        job()
+    }
+
+    #[cfg(test)]
     mod path_tests {
         #[test]
         fn benchmark_path_comparison_requires_the_same_executable() {
@@ -246,11 +251,6 @@ mod platform {
                 super::normalized_path("D:/raptor/llama-bench.exe")
             );
         }
-    }
-
-    #[cfg(test)]
-    pub fn job_handle_for_tests() -> std::result::Result<HANDLE, String> {
-        job()
     }
 }
 

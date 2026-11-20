@@ -16,7 +16,7 @@ vi.mock("../../api", async (importOriginal) => {
   };
 });
 
-import { ContextMatrix, depthLabel, latencyText, memoryText } from "./ContextMatrix";
+import { ContextMatrix, depthLabel, latencyText, memoryText, summaryText, reportToMarkdown } from "./ContextMatrix";
 
 function row(depth: number, over: Partial<MatrixRow> = {}): MatrixRow {
   return {
@@ -52,6 +52,22 @@ describe("formatting", () => {
     expect(memoryText(row(0, { spilled: true, peak_shared_growth_mib: 2048 }))).toBe("13.0 GB + 2 GB shared");
     expect(memoryText(row(0, { peak_dedicated_mib: null }))).toBe("-");
   });
+
+  it("summarises where generation stays at least half of the empty-context speed", () => {
+    expect(summaryText([row(0), row(4096, { gen_tps: 12.0 }), row(8192, { gen_tps: 8.0 })])).toMatch(/Comfortable up to 4K/);
+    expect(summaryText([row(0), row(4096, { gen_tps: 19.0 })])).toMatch(/every measured length/);
+    expect(summaryText([row(0), row(4096, { gen_tps: 5.0 })])).toMatch(/below half/);
+    expect(summaryText([row(0), row(4096, { spilled: true, gen_tps: 19.0 })])).toMatch(/spills into shared RAM/);
+    expect(summaryText([row(0)])).toBeNull();
+  });
+
+  it("exports the measured report as a Markdown table", () => {
+    const markdown = reportToMarkdown(report([row(0), row(65_536, { kv_cache: "q8_0", prompt_tps: null, note: "does not fit" })]));
+    expect(markdown).toContain("| Context | Cache |");
+    expect(markdown).toContain("| Empty | 16-bit |");
+    expect(markdown).toContain("not measured: does not fit");
+    expect(markdown).toContain("micro-batch 256");
+  });
 });
 
 describe("ContextMatrix", () => {
@@ -67,7 +83,20 @@ describe("ContextMatrix", () => {
     render(<ContextMatrix modelId="local/m" disabled={false} />);
     expect(await screen.findByRole("table", { name: "Speed and memory by context length" })).toBeInTheDocument();
     expect(screen.getByText("19.9 tok/s")).toBeInTheDocument();
+    expect(screen.getByText(/every measured length/)).toBeInTheDocument();
     expect(mocks.matrix).not.toHaveBeenCalled();
+  });
+
+  it("copies the measured report to the clipboard as Markdown", async () => {
+    mocks.last.mockResolvedValue(report([row(0)]));
+    const user = userEvent.setup();
+    render(<ContextMatrix modelId="local/m" disabled={false} />);
+    const writeText = vi.spyOn(navigator.clipboard, "writeText");
+    await user.click(await screen.findByRole("button", { name: /Copy table/ }));
+    expect(writeText).toHaveBeenCalledTimes(1);
+    const markdown = writeText.mock.calls[0]?.[0] as unknown as string;
+    expect(markdown).toContain("| Context | Cache |");
+    expect(markdown).toContain("local/m");
   });
 
   it("asks first, runs the quick range by default and shows a depth that was not measured", async () => {

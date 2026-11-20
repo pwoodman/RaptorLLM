@@ -37,6 +37,8 @@ function record(overrides: Partial<BenchRecord> = {}): BenchRecord {
     ttft_ms: 180,
     prompt_tps: 950.5,
     gen_tps: 61.25,
+    prompt_tokens: 512,
+    gen_tokens: 64,
     vram_bytes: 9 * 1024 * 1024 * 1024,
     ram_bytes: 0,
     stable: true,

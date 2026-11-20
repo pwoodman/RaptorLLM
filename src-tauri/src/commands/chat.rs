@@ -529,7 +529,7 @@ where
         let mut msgs = messages.clone();
         msgs[last_user].content.push_str("\n\n");
         msgs[last_user].content.push_str(&plan.as_text());
-        msgs[last_user].content.push_str("\n");
+        msgs[last_user].content.push('\n');
         msgs[last_user].content.push_str(&plan.section_prompt(i));
         let section = section_body(&body, &msgs, sections::SECTION_MAX_TOKENS)?;
         let (done_tx, up, stop) = (tx.clone(), upstream.clone(), cancel.clone());
