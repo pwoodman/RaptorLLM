@@ -14,15 +14,23 @@ pub struct Trial {
     pub ubatch: u32,
     pub kv_cache: KvCacheType,
     pub seconds: f64,
+    pub estimated_ttft_ms: Option<f64>,
+    pub prompt_tps: Option<f64>,
+    pub gen_tps: Option<f64>,
 }
 
 impl Trial {
-    fn new(config: &LaunchConfig, seconds: f64) -> Self {
+    fn new(config: &LaunchConfig, seconds: f64, reply: &serde_json::Value) -> Self {
+        let speed = &reply["raptor"];
+        let measured = |key: &str| speed[key].as_f64().filter(|n| n.is_finite() && *n > 0.0);
         Self {
             gpu_layers: config.gpu_layers,
             ubatch: config.ubatch_size,
             kv_cache: config.kv_cache,
             seconds,
+            estimated_ttft_ms: measured("time_to_first_token_ms"),
+            prompt_tps: measured("prompt_tokens_per_second"),
+            gen_tps: measured("tokens_per_second"),
         }
     }
 }
@@ -131,13 +139,18 @@ pub(super) fn stock_config(mut base: LaunchConfig, ctx: u32) -> LaunchConfig {
 }
 
 impl AppState {
-    async fn trial(&self, config: &LaunchConfig, seed: u32, vocab: u32) -> Result<f64> {
+    async fn trial(&self, config: &LaunchConfig, seed: u32, vocab: u32) -> Result<Trial> {
         let result = self.time_full_window(config, seed, vocab).await;
         self.tune_steps.0.fetch_add(1, Relaxed);
         result
     }
 
-    async fn time_full_window(&self, config: &LaunchConfig, seed: u32, vocab: u32) -> Result<f64> {
+    async fn time_full_window(
+        &self,
+        config: &LaunchConfig,
+        seed: u32,
+        vocab: u32,
+    ) -> Result<Trial> {
         self.runtime.load_model(config.clone()).await?;
         let measured = async {
             if config.backend.is_gpu()
@@ -175,7 +188,7 @@ impl AppState {
                 ));
             };
             check_usage(&reply, config.ctx_size)?;
-            Ok(elapsed)
+            Ok(Trial::new(config, elapsed, &reply))
         }
         .await;
         self.runtime.unload().await?;
@@ -265,13 +278,14 @@ impl AppState {
         );
         self.tune_steps.0.store(0, Relaxed);
         self.tune_steps.1.store(configs.len() as u32, Relaxed);
-        let base_time = self.trial(&baseline, 1, vocab).await.map_err(|e| {
+        let baseline_trial = self.trial(&baseline, 1, vocab).await.map_err(|e| {
             RaptorError::Runtime(format!("Baseline failed full-window qualification: {e}"))
         })?;
+        let base_time = baseline_trial.seconds;
         let mut report = TuneReport {
             context_size: ctx,
             output_tokens: OUTPUT,
-            results: vec![Trial::new(&baseline, base_time)],
+            results: vec![baseline_trial],
             errors: Vec::new(),
             confirmation: Vec::new(),
             finalist: None,
@@ -283,11 +297,12 @@ impl AppState {
         let mut ranked = Vec::new();
         for c in &configs[1..] {
             match self.trial(c, 1, vocab).await {
-                Ok(t) => {
+                Ok(trial) => {
+                    let t = trial.seconds;
                     if t < base_time {
                         ranked.push((report.results.len(), c, t));
                     }
-                    report.results.push(Trial::new(c, t));
+                    report.results.push(trial);
                     if !deep && t * 1.5 <= base_time {
                         break;
                     }
@@ -318,8 +333,8 @@ impl AppState {
                     (&baseline, best)
                 };
                 let pair = async {
-                    let a = self.trial(first, seed, vocab).await?;
-                    let b = self.trial(second, seed, vocab).await?;
+                    let a = self.trial(first, seed, vocab).await?.seconds;
+                    let b = self.trial(second, seed, vocab).await?.seconds;
                     Ok::<_, RaptorError>(if candidate_first { (b, a) } else { (a, b) })
                 }
                 .await;
@@ -485,5 +500,25 @@ mod tests {
         v["timings"]["prompt_n"] = json!(65472);
         v["usage"]["completion_tokens"] = json!(63);
         assert!(check_usage(&v, 65536).is_err());
+    }
+
+    #[test]
+    fn trial_reports_the_server_speed_and_estimated_first_token() {
+        let config = gpu_base();
+        let mut reply = json!({"timings": {
+            "prompt_ms": 10_000.0,
+            "prompt_per_second": 6500.0,
+            "predicted_per_token_ms": 25.0,
+            "predicted_per_second": 40.0
+        }});
+        crate::adapters::attach_speed(&mut reply, None);
+        let trial = Trial::new(&config, 12.0, &reply);
+        assert_eq!(trial.estimated_ttft_ms, Some(10_025.0));
+        assert_eq!(trial.prompt_tps, Some(6500.0));
+        assert_eq!(trial.gen_tps, Some(40.0));
+        let missing = Trial::new(&config, 12.0, &json!({}));
+        assert_eq!(missing.estimated_ttft_ms, None);
+        assert_eq!(missing.prompt_tps, None);
+        assert_eq!(missing.gen_tps, None);
     }
 }

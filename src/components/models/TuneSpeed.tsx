@@ -8,6 +8,7 @@ import { useStore } from "../../hooks/useStore";
 import { messageOf } from "../../lib/errors";
 import { ConfirmDialog } from "../ConfirmDialog";
 import { Notice } from "../Notice";
+import { formatTps } from "./LoadReport";
 
 export function tuneSummary(r: TuneReport): string {
   const window = r.context_size.toLocaleString("en-US");
@@ -158,11 +159,25 @@ export function TuneSpeed({ entry, disabled, onRunningChange, prominent = false 
           <p className="small">{tuneSummary(report)}</p>
           <details className="tune-details">
           <summary>Benchmark details and measured settings</summary>
-          <p className="small">Each run uses one slot, {(report.context_size - report.output_tokens).toLocaleString()} fresh synthetic prompt tokens and {report.output_tokens} generated tokens. Times include the full completion request.</p>
-          <table className="small tune-table" aria-label="Measured settings">
-            <thead><tr><th>Setup</th><th>GPU layers</th><th>Micro-batch</th><th>KV cache</th><th>Request time</th></tr></thead>
-            <tbody>{report.results.map((trial, i) => <tr key={i}><th scope="row">{i === 0 ? "Default" : `Candidate ${i}`}</th><td>{trial.gpu_layers}</td><td>{trial.ubatch}</td><td>{trial.kv_cache}</td><td>{trial.seconds.toFixed(2)} s</td></tr>)}</tbody>
-          </table>
+          <p className="small">Each run uses one slot and fresh synthetic input. First-token time is estimated from the server’s timings. Combined speed counts input and output tokens over the full request.</p>
+          <div className="table-wrap">
+            <table className="small tune-table" aria-label="Measured settings">
+              <thead><tr><th scope="col">Setup</th><th scope="col">GPU layers</th><th scope="col">Micro-batch</th><th scope="col">KV cache</th><th scope="col">Request time</th><th scope="col">Time to first token (est.)</th><th scope="col">Input</th><th scope="col">Output</th><th scope="col">Combined speed</th></tr></thead>
+              <tbody>{report.results.map((trial, i) => (
+                <tr key={i}>
+                  <th scope="row">{i === 0 ? "Default" : `Candidate ${i}`}</th>
+                  <td>{trial.gpu_layers}</td>
+                  <td>{trial.ubatch}</td>
+                  <td>{trial.kv_cache}</td>
+                  <td>{trial.seconds.toFixed(2)} s</td>
+                  <td>{trial.estimated_ttft_ms == null ? "Unknown" : `${(trial.estimated_ttft_ms / 1000).toFixed(2)} s`}</td>
+                  <td>{(report.context_size - report.output_tokens).toLocaleString()} tokens<br />{formatTps(trial.prompt_tps ?? NaN)}</td>
+                  <td>{report.output_tokens.toLocaleString()} tokens<br />{formatTps(trial.gen_tps ?? NaN)}</td>
+                  <td>{formatTps(trial.seconds > 0 ? report.context_size / trial.seconds : NaN)}</td>
+                </tr>
+              ))}</tbody>
+            </table>
+          </div>
           {report.confirmation.length > 0 && <table className="small tune-table" aria-label="Independent confirmation">
             <caption>Independent runs of the default and candidate {report.finalist}</caption>
             <thead><tr><th>Pair</th><th>Default</th><th>Candidate</th><th>Speed ratio</th></tr></thead>

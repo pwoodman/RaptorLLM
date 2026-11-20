@@ -253,6 +253,9 @@ export interface TuneTrial {
   ubatch: number;
   kv_cache: KvCacheType;
   seconds: number;
+  estimated_ttft_ms?: number | null;
+  prompt_tps?: number | null;
+  gen_tps?: number | null;
 }
 
 export interface SavedTuning {

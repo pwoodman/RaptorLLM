@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ModelEntry, TuneReport } from "../../api";
 
@@ -28,7 +28,10 @@ const entry = { id: "local/o.gguf", file_name: "o.gguf" } as ModelEntry;
 function report(over: Partial<TuneReport> = {}): TuneReport {
   return {
     context_size: 65536, output_tokens: 64, finalist: 1, saved: true, retained_profile: false,
-    results: [{gpu_layers: 41, ubatch: 256, kv_cache: "f16", seconds: 15}, {gpu_layers: 45, ubatch: 256, kv_cache: "q4_0", seconds: 10}],
+    results: [
+      { gpu_layers: 41, ubatch: 256, kv_cache: "f16", seconds: 15, estimated_ttft_ms: 10_250, prompt_tps: 6400, gen_tps: 16 },
+      { gpu_layers: 45, ubatch: 256, kv_cache: "q4_0", seconds: 10 },
+    ],
     confirmation: [[15,10],[16,10],[15,10]], errors: [], ...over,
   };
 }
@@ -65,7 +68,16 @@ describe("TuneSpeed", () => {
 
     await waitFor(() => expect(mocks.tune).toHaveBeenCalledWith("local/o.gguf", false, null, null));
     await userEvent.click(await screen.findByText("Benchmark details and measured settings"));
-    expect(screen.getByRole("table", { name: "Measured settings" })).toBeInTheDocument();
+    const table = within(screen.getByRole("table", { name: "Measured settings" }));
+    expect(table.getByRole("columnheader", { name: "Time to first token (est.)" })).toBeInTheDocument();
+    const baseline = within(table.getByRole("row", { name: /^Default/ }));
+    expect(baseline.getByText("10.25 s")).toBeInTheDocument();
+    expect(baseline.getByText(`${(65_472).toLocaleString()} tokens`, { exact: false })).toHaveTextContent("6400.0 tok/s");
+    expect(baseline.getByText("64 tokens", { exact: false })).toHaveTextContent("16.0 tok/s");
+    expect(baseline.getByText("4369.1 tok/s")).toBeInTheDocument();
+    const candidate = within(table.getByRole("row", { name: /^Candidate 1/ }));
+    expect(candidate.getAllByText("Unknown", { exact: false })).toHaveLength(3);
+    expect(candidate.getByText("6553.6 tok/s")).toBeInTheDocument();
     expect(screen.getByRole("table", {name: "Independent confirmation"})).toBeInTheDocument();
   });
 
