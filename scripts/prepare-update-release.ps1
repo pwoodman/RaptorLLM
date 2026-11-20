@@ -56,7 +56,8 @@ try {
   $changes = & git status --porcelain
   if ($changes) { throw "Commit and push all changes first. The release tag is not created while the working tree is dirty." }
   $tag = "v$version"
-  if ((& git tag --list $tag).Trim()) { throw "Local tag $tag already exists; refusing to reuse a release tag." }
+  $localTag = (& git tag --list $tag)
+  if ($localTag) { throw "Local tag $tag already exists; refusing to reuse a release tag." }
   $remoteTag = & git ls-remote --tags origin "refs/tags/$tag"
   if ($LASTEXITCODE -ne 0) { throw "Could not check GitHub for an existing $tag tag." }
   if ($remoteTag) { throw "GitHub tag $tag already exists; release tags cannot be reused." }
