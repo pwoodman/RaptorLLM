@@ -7,6 +7,7 @@ interface ConfirmDialogProps {
   confirmLabel: string;
   cancelLabel?: string;
   tone?: "default" | "danger";
+  secondaryAction?: { label: string; onClick: () => void };
   busy?: boolean;
   /** Blocks the confirm button, for example while the facts it confirms have not loaded. */
   confirmDisabled?: boolean;
@@ -25,6 +26,7 @@ export function ConfirmDialog({
   confirmLabel,
   cancelLabel = "Cancel",
   tone = "default",
+  secondaryAction,
   busy = false,
   confirmDisabled = false,
   onConfirm,
@@ -85,6 +87,11 @@ export function ConfirmDialog({
           <button ref={cancelRef} type="button" className="btn" onClick={onCancel} disabled={busy}>
             {cancelLabel}
           </button>
+          {secondaryAction && (
+            <button type="button" className="btn" disabled={busy} onClick={secondaryAction.onClick}>
+              {secondaryAction.label}
+            </button>
+          )}
           <button
             type="button"
             className={tone === "danger" ? "btn btn-danger" : "btn btn-primary"}

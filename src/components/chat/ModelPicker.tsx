@@ -1,24 +1,20 @@
-import { useId, useState } from "react";
+import { useId } from "react";
 import { useStore } from "../../hooks/useStore";
 import { isGenerating, chatStore } from "../../state/chat";
 import { engineStore, loadModel, unloadModel } from "../../state/engine";
 import { libraryStore } from "../../state/library";
-import { uiStore } from "../../state/ui";
-import { LoadFailureCard } from "../models/LoadFailureCard";
 import { Notice } from "../Notice";
-import { CurrentOptimizationBadge } from "../models/OptimizationBadge";
 
 const UNKNOWN_OPTION = "__loaded_unknown__";
 
 /** Lists installed models only. Choosing one loads it; choosing "No model loaded" unloads it. */
-export function ModelPicker() {
+export function ModelPicker({ onError }: { onError: (error: unknown) => void }) {
   const models = useStore(libraryStore, (s) => s.models);
   const libraryError = useStore(libraryStore, (s) => s.error);
   const loaded = useStore(engineStore, (s) => s.loaded);
   const status = useStore(engineStore, (s) => s.status);
   const busy = useStore(engineStore, (s) => s.busy);
   const generating = useStore(chatStore, (s) => isGenerating(s.pending));
-  const [error, setError] = useState<unknown>(null);
   const selectId = useId();
 
   const serverReady = status?.server.state.state === "ready";
@@ -28,7 +24,7 @@ export function ModelPicker() {
   const value = loadedId ?? (unknownLoaded ? UNKNOWN_OPTION : "");
 
   async function choose(id: string) {
-    setError(null);
+    onError(null);
     try {
       if (id === "") {
         await unloadModel();
@@ -36,13 +32,13 @@ export function ModelPicker() {
         await loadModel(id);
       }
     } catch (e) {
-      setError(e);
+      onError(e);
     }
   }
 
   return (
     <div className="model-picker">
-      <label htmlFor={selectId} className="field-label">
+      <label htmlFor={selectId} className="sr-only">
         Model
       </label>
       <select
@@ -64,7 +60,6 @@ export function ModelPicker() {
           </option>
         ))}
       </select>
-      <CurrentOptimizationBadge />
       {busy === "optimizing" && <span className="small optimized-speed">Optimizing before chat…</span>}
       {busy === "loading" && <span className="muted small">Loading model...</span>}
       {busy === "unloading" && <span className="muted small">Unloading...</span>}
@@ -72,12 +67,6 @@ export function ModelPicker() {
         <Notice tone="warn" title="Model list unavailable">
           {libraryError}
         </Notice>
-      )}
-      {error !== null && <LoadFailureCard error={error} />}
-      {models !== null && models.length === 0 && (
-        <button type="button" className="btn btn-sm" onClick={() => uiStore.set({ page: "models" })}>
-          Install a model
-        </button>
       )}
     </div>
   );

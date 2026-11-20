@@ -8,7 +8,6 @@ import { libraryStore } from "../../state/library";
 import { EmptyState, LoadingState } from "../AsyncState";
 import { GpuVerdictView } from "../GpuVerdictView";
 import { Notice } from "../Notice";
-import { LoadProgressBar } from "./LoadProgressBar";
 import { Panel } from "../Panel";
 import { CurrentOptimizationBadge } from "./OptimizationBadge";
 
@@ -46,7 +45,6 @@ export function LoadedModelPanel() {
         )
       }
     >
-      <LoadProgressBar active={busy === "loading"} />
       {statusError !== null && (
         <Notice tone="danger" title="Engine status unavailable">
           {statusError}
@@ -136,7 +134,7 @@ export function LoadedModelPanel() {
       )}
       {status !== null && loaded === null && serverState?.state !== "ready" && (
         <EmptyState icon={Cpu} title="No model loaded">
-          Load one from the Library tab below.
+          Load a model from the Library tab.
         </EmptyState>
       )}
 

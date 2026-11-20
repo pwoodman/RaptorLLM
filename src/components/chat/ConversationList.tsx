@@ -1,5 +1,5 @@
 import { useEffect, useId, useState, type FormEvent } from "react";
-import { Check, FileUp, MessageSquare, Pencil, Plus, Search, Trash2, X } from "lucide-react";
+import { Check, FileUp, Pencil, Plus, Search, Trash2, X } from "lucide-react";
 import { api, conversationsSearch, type ConversationSearch } from "../../api";
 import { useStore } from "../../hooks/useStore";
 import { TITLE_SEARCH_ID } from "../../hooks/useGlobalShortcuts";
@@ -14,7 +14,7 @@ import {
   renameConversation,
   selectConversation,
 } from "../../state/chat";
-import { EmptyState, ErrorState, LoadingState } from "../AsyncState";
+import { ErrorState, LoadingState } from "../AsyncState";
 import { ConfirmDialog } from "../ConfirmDialog";
 import { Notice } from "../Notice";
 
@@ -146,15 +146,136 @@ export function ConversationList() {
     <aside className="conv-list" aria-label="Conversations">
       <div className="conv-list-head">
         <h2>Conversations</h2>
-        <button type="button" className="btn btn-primary btn-sm" onClick={() => void run(createConversation)}>
+        <button type="button" className="btn btn-sm" onClick={() => void run(createConversation)}>
           <Plus size={15} aria-hidden="true" /> New chat
         </button>
       </div>
 
+      <label className="search-field">
+        <Search size={15} aria-hidden="true" />
+        <span className="sr-only">Search conversation titles and messages</span>
+        <input
+          id={TITLE_SEARCH_ID}
+          type="search"
+          placeholder="Search chats"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+        />
+      </label>
+
+      <div className="conv-scroll">
+        {needle !== "" && (
+          <section className="content-hits" aria-label="Matches in messages">
+            <h3 className="subsection-title">Messages</h3>
+            {contentPending && <LoadingState label="Searching messages..." />}
+            {!contentPending && content.status === "error" && (
+              <Notice tone="danger" title="Message search failed">
+                {content.message}
+              </Notice>
+            )}
+            {!contentPending && content.status === "done" && (
+              <ContentResults result={content.result} needle={needle} onOpen={(id, messageId) =>
+                  void run(async () => {
+                    chatStore.set({ focusMessageId: messageId });
+                    await selectConversation(id);
+                  })
+                } />
+            )}
+          </section>
+        )}
+
+        {problems.map((problem) => (
+          <Notice key={problem} tone="warn">
+            {problem}
+          </Notice>
+        ))}
+        {actionError !== null && <ErrorState error={actionError} />}
+
+        {list === null && listError === null && <LoadingState label="Loading conversations..." />}
+        {listError !== null && (
+          <Notice
+            tone="danger"
+            title="Could not load conversations"
+            actions={
+              <button type="button" className="btn btn-sm" onClick={() => void refreshList()}>
+                Try again
+              </button>
+            }
+          >
+            {listError}
+          </Notice>
+        )}
+        {list !== null && list.length === 0 && (
+          <p className="muted small conv-empty">No conversations yet</p>
+        )}
+        {needle !== "" && list !== null && list.length > 0 && visible.length === 0 && (
+          <p className="muted small">No conversation titles match "{needle}".</p>
+        )}
+
+        <ul className="conv-items">
+          {visible.map((item) => (
+            <li key={item.id} className="conv-item">
+              {renamingId === item.id ? (
+                <form className="rename-form" onSubmit={(e) => void commitRename(e, item.id)}>
+                  <input
+                    aria-label="Conversation title"
+                    value={draftTitle}
+                    autoFocus
+                    maxLength={200}
+                    onChange={(e) => setDraftTitle(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Escape") setRenamingId(null);
+                    }}
+                  />
+                  <button type="submit" className="icon-btn" aria-label="Save title">
+                    <Check size={15} aria-hidden="true" />
+                  </button>
+                  <button type="button" className="icon-btn" aria-label="Cancel rename" onClick={() => setRenamingId(null)}>
+                    <X size={15} aria-hidden="true" />
+                  </button>
+                </form>
+              ) : (
+                <>
+                  <button
+                    type="button"
+                    className="conv-select"
+                    aria-current={item.id === activeId ? "true" : undefined}
+                    onClick={() => {
+                      if (item.id !== activeId) void run(() => selectConversation(item.id));
+                    }}
+                  >
+                    <span className="conv-title">{item.title}</span>
+                    <span className="conv-meta">{item.message_count} messages</span>
+                  </button>
+                  <div className="conv-actions">
+                    <button
+                      type="button"
+                      className="icon-btn"
+                      aria-label={`Rename ${item.title}`}
+                      onClick={() => {
+                        setDraftTitle(item.title);
+                        setRenamingId(item.id);
+                      }}
+                    >
+                      <Pencil size={14} aria-hidden="true" />
+                    </button>
+                    <button
+                      type="button"
+                      className="icon-btn icon-btn-danger"
+                      aria-label={`Delete ${item.title}`}
+                      onClick={() => setDeleteId(item.id)}
+                    >
+                      <Trash2 size={14} aria-hidden="true" />
+                    </button>
+                  </div>
+                </>
+              )}
+            </li>
+          ))}
+        </ul>
+      </div>
+
       <div className="conv-import">
-        <label htmlFor={importInputId} className="btn btn-ghost btn-sm">
-          <FileUp size={14} aria-hidden="true" /> {importing ? "Importing..." : "Import conversation (.json)"}
-        </label>
         <input
           id={importInputId}
           type="file"
@@ -167,133 +288,11 @@ export function ConversationList() {
             if (file) void importFile(file);
           }}
         />
+        <label htmlFor={importInputId} className="btn btn-ghost btn-sm">
+          <FileUp size={14} aria-hidden="true" /> {importing ? "Importing..." : "Import conversation"}
+        </label>
       </div>
       {importNotice !== null && <p className="muted small" role="status">{importNotice}</p>}
-
-      <label className="search-field">
-        <Search size={15} aria-hidden="true" />
-        <span className="sr-only">Search conversation titles and messages</span>
-        <input
-          id={TITLE_SEARCH_ID}
-          type="search"
-          placeholder="Search titles and messages"
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-        />
-      </label>
-
-      {needle !== "" && (
-        <section className="content-hits" aria-label="Matches in messages">
-          <h3 className="subsection-title">Messages</h3>
-          {contentPending && <LoadingState label="Searching messages..." />}
-          {!contentPending && content.status === "error" && (
-            <Notice tone="danger" title="Message search failed">
-              {content.message}
-            </Notice>
-          )}
-          {!contentPending && content.status === "done" && (
-            <ContentResults result={content.result} needle={needle} onOpen={(id, messageId) =>
-                void run(async () => {
-                  chatStore.set({ focusMessageId: messageId });
-                  await selectConversation(id);
-                })
-              } />
-          )}
-        </section>
-      )}
-
-      {problems.map((problem) => (
-        <Notice key={problem} tone="warn">
-          {problem}
-        </Notice>
-      ))}
-      {actionError !== null && <ErrorState error={actionError} />}
-
-      {list === null && listError === null && <LoadingState label="Loading conversations..." />}
-      {listError !== null && (
-        <Notice
-          tone="danger"
-          title="Could not load conversations"
-          actions={
-            <button type="button" className="btn btn-sm" onClick={() => void refreshList()}>
-              Try again
-            </button>
-          }
-        >
-          {listError}
-        </Notice>
-      )}
-      {list !== null && list.length === 0 && (
-        <EmptyState icon={MessageSquare} title="No conversations yet">
-          Start one to talk to your local model. Everything stays on this machine.
-        </EmptyState>
-      )}
-      {needle !== "" && list !== null && list.length > 0 && visible.length === 0 && (
-        <p className="muted small">No conversation titles match "{needle}".</p>
-      )}
-
-      <ul className="conv-items">
-        {visible.map((item) => (
-          <li key={item.id} className="conv-item">
-            {renamingId === item.id ? (
-              <form className="rename-form" onSubmit={(e) => void commitRename(e, item.id)}>
-                <input
-                  aria-label="Conversation title"
-                  value={draftTitle}
-                  autoFocus
-                  maxLength={200}
-                  onChange={(e) => setDraftTitle(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Escape") setRenamingId(null);
-                  }}
-                />
-                <button type="submit" className="icon-btn" aria-label="Save title">
-                  <Check size={15} aria-hidden="true" />
-                </button>
-                <button type="button" className="icon-btn" aria-label="Cancel rename" onClick={() => setRenamingId(null)}>
-                  <X size={15} aria-hidden="true" />
-                </button>
-              </form>
-            ) : (
-              <>
-                <button
-                  type="button"
-                  className="conv-select"
-                  aria-current={item.id === activeId ? "true" : undefined}
-                  onClick={() => {
-                    if (item.id !== activeId) void run(() => selectConversation(item.id));
-                  }}
-                >
-                  <span className="conv-title">{item.title}</span>
-                  <span className="conv-meta">{item.message_count} messages</span>
-                </button>
-                <div className="conv-actions">
-                  <button
-                    type="button"
-                    className="icon-btn"
-                    aria-label={`Rename ${item.title}`}
-                    onClick={() => {
-                      setDraftTitle(item.title);
-                      setRenamingId(item.id);
-                    }}
-                  >
-                    <Pencil size={14} aria-hidden="true" />
-                  </button>
-                  <button
-                    type="button"
-                    className="icon-btn icon-btn-danger"
-                    aria-label={`Delete ${item.title}`}
-                    onClick={() => setDeleteId(item.id)}
-                  >
-                    <Trash2 size={14} aria-hidden="true" />
-                  </button>
-                </div>
-              </>
-            )}
-          </li>
-        ))}
-      </ul>
-
       <ConfirmDialog
         open={deleteId !== null}
         title="Delete conversation?"

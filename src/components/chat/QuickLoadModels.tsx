@@ -5,7 +5,9 @@ import { useStore } from "../../hooks/useStore";
 import { formatBytes } from "../../lib/format";
 import { engineStore, loadModel } from "../../state/engine";
 import { libraryStore, refreshLibrary } from "../../state/library";
-import { uiStore } from "../../state/ui";
+import { openModelImport, openModels } from "../../state/ui";
+import { LoadingState } from "../AsyncState";
+import { Notice } from "../Notice";
 import { LoadFailureCard } from "../models/LoadFailureCard";
 import { LoadProgressBar } from "../models/LoadProgressBar";
 import { TuneSpeed } from "../models/TuneSpeed";
@@ -45,6 +47,7 @@ export function orderModels(models: ModelEntry[], last: string | null): ModelEnt
  */
 export function QuickLoadModels() {
   const models = useStore(libraryStore, (s) => s.models);
+  const libraryError = useStore(libraryStore, (s) => s.error);
   const busy = useStore(engineStore, (s) => s.busy);
   const [choice, setChoice] = useState<string | null>(null);
   const [optimizing, setOptimizing] = useState(false);
@@ -59,22 +62,31 @@ export function QuickLoadModels() {
     setError(null);
     try {
       await loadModel(id);
-      remember(id);
+      if (engineStore.get().loaded?.modelId === id) remember(id);
     } catch (e) {
       setError(e);
     }
   }
 
-  if (models === null) return null;
+  if (models === null) {
+    return libraryError === null ? <LoadingState label="Reading the model library…" /> : (
+      <Notice tone="warn" title="Model library unavailable" actions={
+        <button type="button" className="btn btn-sm" onClick={() => void refreshLibrary()}>Try again</button>
+      }>
+        {libraryError}
+      </Notice>
+    );
+  }
   if (models.length === 0) {
     return (
       <div className="quick-load">
-        <p className="small">
-          No models are installed yet.{" "}
-          <button type="button" className="btn btn-sm" onClick={() => uiStore.set({ page: "models" })}>
-            Add or import a model
+        <p className="small">No models are installed yet.</p>
+        <div className="button-row">
+          <button type="button" className="btn btn-primary" onClick={() => openModels("discover")}>
+            Browse models
           </button>
-        </p>
+          <button type="button" className="btn" onClick={openModelImport}>Add local models</button>
+        </div>
         <DiscoveredModels />
       </div>
     );
@@ -110,9 +122,15 @@ export function QuickLoadModels() {
           <Play size={14} aria-hidden="true" /> {busy === "loading" ? "Loading..." : "Load model"}
         </button>
       </div>
-      <TuneSpeed key={selected.id} entry={selected} disabled={busy !== null} onRunningChange={setOptimizing} />
       <LoadProgressBar active={busy === "loading"} />
       {error !== null && <LoadFailureCard error={error} />}
+      <details className="model-options">
+        <summary>Model options</summary>
+        <TuneSpeed key={selected.id} entry={selected} disabled={busy !== null} onRunningChange={setOptimizing} />
+        <button type="button" className="btn btn-ghost btn-sm" onClick={() => openModels("library")}>
+          Manage models
+        </button>
+      </details>
       <DiscoveredModels />
     </div>
   );

@@ -1,10 +1,12 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { FolderSearch } from "lucide-react";
 import { api, type ScanItem } from "../../api";
+import { useStore } from "../../hooks/useStore";
 import { messageOf } from "../../lib/errors";
 import { formatBytes } from "../../lib/format";
 import { importModel } from "../../state/library";
 import { syncLocalModels } from "../../state/localModels";
+import { uiStore } from "../../state/ui";
 import { ErrorState } from "../AsyncState";
 import { Notice } from "../Notice";
 
@@ -20,8 +22,17 @@ export function ImportPanel() {
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<unknown>(null);
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
+  const [choosing, setChoosing] = useState(false);
+  const focusImport = useStore(uiStore, (s) => s.focusModelImport);
+  const headingRef = useRef<HTMLHeadingElement>(null);
 
-  const busy = scanning || adding !== null;
+  const busy = choosing || scanning || adding !== null;
+
+  useEffect(() => {
+    if (!focusImport) return;
+    headingRef.current?.focus();
+    uiStore.set({ focusModelImport: false });
+  }, [focusImport]);
 
   // Adding hashes each file, which takes minutes for a large model. Show how far it is.
   useEffect(() => {
@@ -61,6 +72,7 @@ export function ImportPanel() {
 
   async function chooseFolder() {
     setError(null);
+    setChoosing(true);
     try {
       const selected = await api.dialog.pickFolder();
       if (selected) {
@@ -70,6 +82,8 @@ export function ImportPanel() {
       }
     } catch (e) {
       setError(e);
+    } finally {
+      setChoosing(false);
     }
   }
 
@@ -94,11 +108,15 @@ export function ImportPanel() {
   }
 
   async function addSingleFile() {
+    setError(null);
+    setChoosing(true);
     try {
       const selected = await api.dialog.pickFile(["gguf"]);
       if (selected) await addFiles([selected]);
-    } catch {
-      // dialog cancelled or failed
+    } catch (e) {
+      setError(e);
+    } finally {
+      setChoosing(false);
     }
   }
 
@@ -106,12 +124,11 @@ export function ImportPanel() {
 
   return (
     <section className="import-panel" aria-labelledby="import-heading">
-      <h2 id="import-heading" className="section-title">
-        Add models
+      <h2 id="import-heading" ref={headingRef} tabIndex={-1} className="section-title">
+        Add local models
       </h2>
       <p className="muted small">
-        Choose the folder where your models live. Everything inside it, including subfolders, is found. Your files stay
-        where they are.
+        Add a GGUF file or a folder of models. Raptor scans subfolders and keeps your files in place.
       </p>
 
       <div className="import-actions">

@@ -1,5 +1,5 @@
 import { ClipboardList } from "lucide-react";
-import type { BenchmarkOutcome, ConfigSource } from "../../api";
+import type { BenchmarkOutcome, ConfigSource, LoadModelOutcome } from "../../api";
 import { useStore } from "../../hooks/useStore";
 import { formatCount } from "../../lib/format";
 import { engineStore } from "../../state/engine";
@@ -11,6 +11,18 @@ const SOURCE_LABEL: Record<ConfigSource, string> = {
   known_good: "Known good: the fastest stable settings measured on this machine for this model",
   recommended: "Recommended: no measured settings yet, so Raptor estimated them",
 };
+
+export function LoadMemoryWarning({ report }: { report: LoadModelOutcome | null }) {
+  const memory = report?.gpu_memory;
+  if (!memory?.spilled || memory.expected) return null;
+  return (
+    <Notice tone="warn" title="This load spilled into shared system memory">
+      {memory.shared_growth_mib.toLocaleString()} MiB did not fit in VRAM and went into shared system
+      memory. The model works, but generation can be several times slower. Choose a smaller context window or
+      cache, or a smaller model.
+    </Notice>
+  );
+}
 
 /** What the last load in this session used, how the GPU behaved, and the benchmark taken right after. */
 export function LoadReport() {
@@ -33,13 +45,7 @@ export function LoadReport() {
           The GPU backend had no device, and CPU fallback is allowed. This model runs on the CPU.
         </Notice>
       )}
-      {report.gpu_memory?.spilled && !report.gpu_memory.expected && (
-        <Notice tone="warn" title="This load spilled into shared system memory">
-          {report.gpu_memory.shared_growth_mib.toLocaleString()} MiB did not fit in VRAM and went into shared system
-          memory. The model works, but generation can be several times slower. Choose a smaller context window or
-          cache, or a smaller model.
-        </Notice>
-      )}
+      <LoadMemoryWarning report={report} />
       {report.gpu_memory?.spilled && report.gpu_memory.expected && (
         <Notice tone="info" title="Part of the model is in shared system memory">
           {report.gpu_memory.shared_growth_mib.toLocaleString()} MiB sits in shared memory, as planned: only a few

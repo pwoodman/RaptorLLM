@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Bot, Play, Square, Trash2 } from "lucide-react";
+import { Bot, FolderPlus, Play, Search, Square, Trash2 } from "lucide-react";
 import type { ContextOption, ModelEntry } from "../../api";
 import { useStore } from "../../hooks/useStore";
 import { formatBytes, formatCount } from "../../lib/format";
@@ -17,6 +17,7 @@ import { ContextMatrix } from "./ContextMatrix";
 import { TuneSpeed } from "./TuneSpeed";
 import { DiscoveredModels } from "../chat/DiscoveredModels";
 import { modelKind } from "../../lib/modelKind";
+import { openModelImport, openModels } from "../../state/ui";
 
 export function LibraryTab() {
   const models = useStore(libraryStore, (s) => s.models);
@@ -48,7 +49,21 @@ export function LibraryTab() {
 
   return (
     <div className="library">
-      {storage && (
+      <div className="library-header">
+        <h2>Installed models</h2>
+        <div className="button-row">
+          <button type="button" className="btn" onClick={() => openModels("discover")}>
+            <Search size={15} aria-hidden="true" /> Browse models
+          </button>
+          {!!models?.length && (
+            <button type="button" className="btn" onClick={openModelImport}>
+              <FolderPlus size={15} aria-hidden="true" /> Add local models
+            </button>
+          )}
+        </div>
+      </div>
+
+      {storage && storage.models > 0 && (
         <dl className="facts storage-facts" aria-label="Storage usage">
           <div>
             <dt>Installed</dt>
@@ -64,8 +79,6 @@ export function LibraryTab() {
           </div>
         </dl>
       )}
-
-      <DiscoveredModels showEmpty />
 
       {libraryError !== null && (
         <Notice
@@ -85,15 +98,8 @@ export function LibraryTab() {
       {models === null && libraryError === null && <LoadingState label="Reading the library..." />}
       {models !== null && models.length === 0 && (
         <EmptyState icon={Bot} title="No models installed">
-          Raptor checks common model folders above. You can also choose a model folder below or download one from Discover.
+          Browse for a model to download, or add a GGUF file you already have.
         </EmptyState>
-      )}
-
-      {models !== null && models.length > 0 && (
-        <Notice tone="info" title="Get the best speed from each model">
-          Open <strong>Model options and speed</strong>, then choose <strong>Optimize speed</strong> to measure it on this PC and save the fastest settings.
-          Raptor shows the default-versus-optimized speed comparison after tuning.
-        </Notice>
       )}
 
       {models !== null && models.length > 0 && (
@@ -156,7 +162,7 @@ export function LibraryTab() {
                         );
                       }}
                     >
-                      <Play size={13} aria-hidden="true" /> {busy === "loading" ? "Loading..." : "Load"}
+                      <Play size={13} aria-hidden="true" /> Load
                     </button>
                   )}
                   <button
@@ -175,9 +181,9 @@ export function LibraryTab() {
         </ul>
       )}
 
-      <PresetsPanel />
-
       <ImportPanel />
+      <DiscoveredModels showEmpty />
+      <PresetsPanel />
 
       <ConfirmDialog
         open={deleteTarget !== null}

@@ -5,11 +5,12 @@ import { useStore } from "../../hooks/useStore";
 import { exportFileName } from "../../lib/conversationFile";
 import { messageOf } from "../../lib/errors";
 import { formatBytes } from "../../lib/format";
-import { chatStore, paramsFor } from "../../state/chat";
+import { chatStore, paramsFor, selectConversation } from "../../state/chat";
 import { engineStore, inferenceBlockReason } from "../../state/engine";
-import { uiStore } from "../../state/ui";
 import { LoadingState } from "../AsyncState";
 import { Notice } from "../Notice";
+import { LoadFailureCard } from "../models/LoadFailureCard";
+import { SetupGuide } from "../setup/SetupGuide";
 import { ConversationFind } from "./ConversationFind";
 import { Composer } from "./Composer";
 import { ContextMeter } from "./ContextMeter";
@@ -30,6 +31,7 @@ export function ChatPanel() {
   const [exporting, setExporting] = useState(false);
   const [exportError, setExportError] = useState<string | null>(null);
   const [exportNotice, setExportNotice] = useState<string | null>(null);
+  const [modelError, setModelError] = useState<unknown>(null);
   const messagesRef = useRef<HTMLDivElement>(null);
 
   const blocked = inferenceBlockReason(status, statusError);
@@ -38,7 +40,9 @@ export function ChatPanel() {
   if (activeId === null) return null;
   if (active === null) {
     return activeError !== null ? (
-      <Notice tone="danger" title="Could not open conversation">
+      <Notice tone="danger" title="Could not open conversation" actions={
+        <button type="button" className="btn btn-sm" onClick={() => void selectConversation(activeId)}>Try again</button>
+      }>
         {activeError}
       </Notice>
     ) : (
@@ -46,7 +50,7 @@ export function ChatPanel() {
     );
   }
 
-  const promptTexts = [systemPrompt, ...active.messages.map((m) => m.content)].filter((t) => t !== "");
+  const promptTexts = [systemPrompt, ...active.messages.map((m) => m.content)];
 
   /** Asks where to save with the native dialog, then writes the file there. Nothing is written before that. */
   async function exportConversation() {
@@ -72,9 +76,9 @@ export function ChatPanel() {
   return (
     <div className="chat-panel">
       <header className="chat-header">
-        <h2 className="chat-title">{active.title}</h2>
+        <h1 className="chat-title" title={active.title}>{active.title}</h1>
         <div className="chat-tools">
-          <ModelPicker />
+          {blocked === null && <ModelPicker onError={setModelError} />}
           <button
             type="button"
             className="btn btn-ghost btn-sm"
@@ -90,11 +94,12 @@ export function ChatPanel() {
             aria-controls="params-panel"
             onClick={() => setShowParams((open) => !open)}
           >
-            <SlidersHorizontal size={14} aria-hidden="true" /> Settings
+            <SlidersHorizontal size={14} aria-hidden="true" /> Chat settings
           </button>
         </div>
       </header>
 
+      {modelError !== null && <LoadFailureCard error={modelError} />}
       {exportError !== null && (
         <Notice tone="danger" title="Export failed">
           {exportError}
@@ -106,11 +111,17 @@ export function ChatPanel() {
         </Notice>
       )}
 
-      <ContextMeter texts={promptTexts} />
-      {showParams && <ParamsPanel conversationId={active.id} />}
+      {showParams ? (
+        <div className="chat-settings">
+          <ContextMeter texts={promptTexts} />
+          <ParamsPanel conversationId={active.id} />
+        </div>
+      ) : (
+        <ContextMeter texts={promptTexts} onlyNearLimit />
+      )}
       <ConversationFind rootRef={messagesRef} />
 
-      {blocked !== null && <ChatUnavailable reason={blocked} />}
+      {blocked !== null && <SetupGuide chatFallback={<ChatUnavailable reason={blocked} />} />}
       {degraded !== null && (
         <Notice tone="warn" title="Inference server degraded">
           {degraded}
@@ -122,8 +133,8 @@ export function ChatPanel() {
         </Notice>
       )}
 
-      <MessageList containerRef={messagesRef} />
-      <Composer blockedReason={blocked} />
+      <MessageList containerRef={messagesRef} blocked={blocked !== null} />
+      <Composer conversationId={active.id} blockedReason={blocked} />
     </div>
   );
 }

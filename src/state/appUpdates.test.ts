@@ -60,11 +60,12 @@ describe("manual updates", () => {
 
   it("protects a draft created during download and an active API request on retry", async () => {
     const { appUpdatesStore, checkAppUpdates, installAppUpdate } = await import("./appUpdates");
-    mocks.download.mockImplementationOnce(async () => { document.body.innerHTML = '<form data-unsaved-work="true"></form>'; });
+    const { updateDraft } = await import("./chat");
+    mocks.download.mockImplementationOnce(async () => { updateDraft("c1", { text: "Draft" }); });
     await checkAppUpdates();
     await installAppUpdate();
     expect(appUpdatesStore.get().message).toContain("unsent chat draft");
-    document.body.innerHTML = "";
+    updateDraft("c1", { text: "" });
     mocks.idle.mockResolvedValue({ idle_seconds: 0, work_active: true });
     await installAppUpdate();
     expect(appUpdatesStore.get().message).toContain("API request");
@@ -120,6 +121,7 @@ describe("idle automatic updates", () => {
   it("postpones for API work, tuning and unsent chat text", async () => {
     const updates = await import("./appUpdates");
     const { engineStore } = await import("./engine");
+    const { updateDraft } = await import("./chat");
     mocks.idle.mockResolvedValue({ idle_seconds: 900, work_active: true });
     await updates.runIdleUpdateCycle();
     expect(mocks.download).not.toHaveBeenCalled();
@@ -128,10 +130,10 @@ describe("idle automatic updates", () => {
     await updates.runIdleUpdateCycle();
     expect(mocks.download).not.toHaveBeenCalled();
     engineStore.set({ busy: null });
-    document.body.innerHTML = '<form data-unsaved-work="true"></form>';
+    updateDraft("inactive-chat", { text: "Draft from another chat" });
     await updates.runIdleUpdateCycle();
     expect(mocks.download).not.toHaveBeenCalled();
-    document.body.innerHTML = "";
+    updateDraft("inactive-chat", { text: "" });
     await updates.runIdleUpdateCycle();
     expect(mocks.download).toHaveBeenCalledTimes(1);
   });

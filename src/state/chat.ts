@@ -71,7 +71,17 @@ export interface ChatState {
   focusMessageId: string | null;
   /** Generation settings per conversation id. Kept in this browser only (see the report). */
   params: Record<string, GenParams>;
+  drafts: ReadonlyMap<string, ChatDraft>;
 }
+
+interface ChatDraft {
+  text: string;
+  attachments: Attachment[];
+  reading: boolean;
+  sending: boolean;
+}
+
+const EMPTY_DRAFT: ChatDraft = { text: "", attachments: [], reading: false, sending: false };
 
 export type ActionResult = { ok: true } | { ok: false; reason: string };
 
@@ -115,7 +125,22 @@ export const chatStore = createStore<ChatState>({
   pending: null,
   focusMessageId: null,
   params: readParams(),
+  drafts: new Map(),
 });
+
+export function draftFor(id: string, state: ChatState = chatStore.get()): ChatDraft {
+  return state.drafts.get(id) ?? EMPTY_DRAFT;
+}
+
+export function updateDraft(id: string, patch: Partial<ChatDraft>): void {
+  chatStore.set((state) => {
+    const drafts = new Map(state.drafts);
+    const draft = { ...draftFor(id, state), ...patch };
+    if (draft.text || draft.attachments.length || draft.reading || draft.sending) drafts.set(id, draft);
+    else drafts.delete(id);
+    return { drafts };
+  });
+}
 
 export function paramsFor(conversationId: string, state: ChatState = chatStore.get()): GenParams {
   return state.params[conversationId] ?? DEFAULT_PARAMS;
@@ -217,10 +242,15 @@ export async function deleteConversation(id: string): Promise<void> {
     }
   }
   await api.conversations.delete(id);
-  chatStore.set((state) => ({
-    list: state.list?.filter((item) => item.id !== id) ?? null,
-    ...(state.activeId === id ? { activeId: null, active: null, activeError: null } : {}),
-  }));
+  chatStore.set((state) => {
+    const drafts = new Map(state.drafts);
+    drafts.delete(id);
+    return {
+      drafts,
+      list: state.list?.filter((item) => item.id !== id) ?? null,
+      ...(state.activeId === id ? { activeId: null, active: null, activeError: null } : {}),
+    };
+  });
 }
 
 function blockedReason(): string | null {

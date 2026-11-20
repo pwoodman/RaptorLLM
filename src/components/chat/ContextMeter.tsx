@@ -5,9 +5,11 @@ import { engineStore } from "../../state/engine";
 import { ProgressBar } from "../ProgressBar";
 
 /** Estimated prompt size against the planned context. The estimate is not the model's tokenizer. */
-export function ContextMeter({ texts }: { texts: string[] }) {
+export function ContextMeter({ texts, onlyNearLimit = false }: { texts: string[]; onlyNearLimit?: boolean }) {
   const ctxSize = useStore(engineStore, (s) => s.loaded?.ctxSize ?? null);
   const used = estimateTokenTotal(texts);
+  const nearLimit = ctxSize !== null && used > ctxSize * 0.9;
+  if (onlyNearLimit && !nearLimit) return null;
 
   if (ctxSize === null) {
     return (
@@ -20,7 +22,6 @@ export function ContextMeter({ texts }: { texts: string[] }) {
     );
   }
 
-  const nearLimit = used > ctxSize * 0.9;
   return (
     <div className="context-meter">
       <div className="context-meter-top">

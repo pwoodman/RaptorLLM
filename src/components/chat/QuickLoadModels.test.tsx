@@ -12,6 +12,7 @@ vi.mock("../../state/engine", async (importOriginal) => {
 vi.mock("../models/LoadProgressBar", () => ({ LoadProgressBar: () => null }));
 vi.mock("./DiscoveredModels", () => ({ DiscoveredModels: () => <div data-testid="discovered" /> }));
 
+import { engineStore } from "../../state/engine";
 import { libraryStore } from "../../state/library";
 import { orderModels, QuickLoadModels } from "./QuickLoadModels";
 
@@ -40,12 +41,15 @@ describe("orderModels", () => {
 describe("QuickLoadModels", () => {
   beforeEach(() => {
     mocks.loadModel.mockReset();
+    engineStore.set({ loaded: null });
     window.localStorage.clear();
   });
 
   it("offers installed models in one picker and loads the one chosen", async () => {
     libraryStore.set({ models: [model("local/a.gguf", "a.gguf"), model("local/b.gguf", "b.gguf")] });
-    mocks.loadModel.mockResolvedValue(undefined);
+    mocks.loadModel.mockImplementation(async (modelId) => {
+      engineStore.set({ loaded: { modelId, ctxSize: null, plannedGpuLayers: null, rationale: [], estimate: null } });
+    });
     render(<QuickLoadModels />);
 
     const picker = screen.getByRole("combobox", { name: "Model to load" });
@@ -71,6 +75,7 @@ describe("QuickLoadModels", () => {
   it("points to the Models page when nothing is installed", () => {
     libraryStore.set({ models: [] });
     render(<QuickLoadModels />);
-    expect(screen.getByRole("button", { name: "Add or import a model" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Browse models" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Add local models" })).toBeInTheDocument();
   });
 });

@@ -1,50 +1,77 @@
-import { useEffect, useState } from "react";
+import { useEffect, type KeyboardEvent } from "react";
+import { ArrowUpRight } from "lucide-react";
 import { DiscoverTab } from "../components/models/DiscoverTab";
 import { CompareTab } from "../components/models/CompareTab";
 import { DownloadsTab } from "../components/models/DownloadsTab";
 import { LibraryTab } from "../components/models/LibraryTab";
 import { LoadedModelPanel } from "../components/models/LoadedModelPanel";
-import { LoadReport } from "../components/models/LoadReport";
+import { LoadMemoryWarning, LoadReport } from "../components/models/LoadReport";
+import { LoadProgressBar } from "../components/models/LoadProgressBar";
 import { PerformancePanel } from "../components/models/PerformancePanel";
 import { SetupGuide } from "../components/setup/SetupGuide";
 import { PageHeader } from "../components/PageHeader";
 import { useStore } from "../hooks/useStore";
 import { refreshDownloads } from "../state/downloads";
 import { libraryStore, refreshLibrary } from "../state/library";
+import { engineStore } from "../state/engine";
+import { uiStore, type ModelView } from "../state/ui";
 
-type Tab = "discover" | "library" | "downloads" | "performance" | "compare";
-
-const TABS: { id: Tab; label: string }[] = [
-  { id: "discover", label: "Discover" },
+const TABS: { id: ModelView; label: string }[] = [
   { id: "library", label: "Library" },
+  { id: "discover", label: "Discover" },
   { id: "downloads", label: "Downloads" },
+  { id: "compare", label: "Compare" },
   { id: "performance", label: "Performance" },
-  { id: "compare", label: "Compare and rank" },
 ];
 
 export default function ModelsPage() {
-  const [tab, setTab] = useState<Tab>("library");
+  const tab = useStore(uiStore, (s) => s.modelView);
   const models = useStore(libraryStore, (s) => s.models);
+  const serverState = useStore(engineStore, (s) => s.status?.server.state.state);
+  const loaded = useStore(engineStore, (s) => s.loaded);
+  const report = useStore(engineStore, (s) => s.loadReport);
+  const busy = useStore(engineStore, (s) => s.busy);
+  const chatReady = loaded !== null && (serverState === "ready" || serverState === "degraded");
 
   useEffect(() => {
     void refreshLibrary();
     void refreshDownloads();
   }, []);
 
+  function setTab(modelView: ModelView) {
+    uiStore.set({ modelView, focusModelImport: false });
+  }
+
+  function moveTab(event: KeyboardEvent<HTMLDivElement>) {
+    const current = TABS.findIndex((item) => item.id === tab);
+    let next: number;
+    switch (event.key) {
+      case "ArrowLeft": next = (current + TABS.length - 1) % TABS.length; break;
+      case "ArrowRight": next = (current + 1) % TABS.length; break;
+      case "Home": next = 0; break;
+      case "End": next = TABS.length - 1; break;
+      default: return;
+    }
+    event.preventDefault();
+    const id = TABS[next].id;
+    setTab(id);
+    event.currentTarget.querySelector<HTMLButtonElement>(`#models-tab-${id}`)?.focus();
+  }
+
   return (
     <div className="page">
       <PageHeader
-        eyebrow="Model library"
         title="Models"
-        description="Find GGUF models on Hugging Face, download them with verification, and load one for chat."
+        actions={chatReady && (
+          <button type="button" className="btn btn-primary" onClick={() => uiStore.set({ page: "chats" })}>
+            Go to Chats <ArrowUpRight size={15} aria-hidden="true" />
+          </button>
+        )}
       />
 
-      <SetupGuide onModelAction={(action) => setTab(action)} />
+      <SetupGuide onModelsPage />
 
-      <LoadedModelPanel />
-      <LoadReport />
-
-      <div className="tabs" role="tablist" aria-label="Model views">
+      <div className="tabs" role="tablist" aria-label="Model views" onKeyDown={moveTab}>
         {TABS.map((item) => (
           <button
             key={item.id}
@@ -62,11 +89,19 @@ export default function ModelsPage() {
         ))}
       </div>
 
-      <div id="models-tabpanel" role="tabpanel" aria-labelledby={`models-tab-${tab}`} className="tabpanel">
+      <LoadProgressBar active={busy === "loading"} />
+      {tab !== "performance" && <LoadMemoryWarning report={report} />}
+      <div id="models-tabpanel" role="tabpanel" tabIndex={0} aria-labelledby={`models-tab-${tab}`} className="tabpanel">
         {tab === "discover" && <DiscoverTab onQueued={() => setTab("downloads")} />}
         {tab === "library" && <LibraryTab />}
         {tab === "downloads" && <DownloadsTab />}
-        {tab === "performance" && <PerformancePanel models={models} />}
+        {tab === "performance" && (
+          <div className="model-performance">
+            <LoadedModelPanel />
+            <LoadReport />
+            <PerformancePanel models={models} />
+          </div>
+        )}
         {tab === "compare" && <CompareTab />}
       </div>
     </div>

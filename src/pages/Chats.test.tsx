@@ -57,14 +57,14 @@ describe("ChatsPage", () => {
     });
   });
 
-  it("says plainly that chat cannot run when the server is stopped, and disables the composer", async () => {
+  it("shows the next model action when the server is stopped and disables sending", async () => {
     engineStore.set({ status: status({ state: "stopped" }), statusError: null });
 
     render(<ChatsPage />);
 
     expect(await screen.findByText(/not running/i)).toBeInTheDocument();
     expect(screen.getByRole("textbox", { name: "Message" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Manage models" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Browse models" })).toBeInTheDocument();
   });
 
   it("enables the composer once the server is ready", async () => {

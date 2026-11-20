@@ -1,6 +1,6 @@
 import { useStore } from "../../hooks/useStore";
 import { engineStore } from "../../state/engine";
-import { uiStore } from "../../state/ui";
+import { openModels } from "../../state/ui";
 import { Notice } from "../Notice";
 import { QuickLoadModels } from "./QuickLoadModels";
 
@@ -17,7 +17,7 @@ export function ChatUnavailable({ reason }: { reason: string }) {
       tone="info"
       title={canLoadHere ? "Load a model to start chatting" : "Chat is not ready"}
       actions={
-        <button type="button" className="btn btn-sm" onClick={() => uiStore.set({ page: "models" })}>
+        !canLoadHere && <button type="button" className="btn btn-sm" onClick={() => openModels("library")}>
           Manage models
         </button>
       }

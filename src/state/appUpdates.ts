@@ -47,9 +47,12 @@ export function postponeUpdate(): void {
 }
 
 function updateBlocker(manual: boolean): string | null {
-  if (chatStore.get().pending) return "Wait for the current chat reply to finish.";
+  const chat = chatStore.get();
+  if (chat.pending) return "Wait for the current chat reply to finish.";
   if (firstLoadStore.get().entry || document.querySelector(".modal-backdrop")) return "Close the open dialog before installing.";
-  if (document.querySelector('[data-unsaved-work="true"]')) return "Save or clear your unsent chat draft before installing.";
+  if ([...chat.drafts.values()].some((draft) => draft.text.trim() || draft.attachments.length || draft.reading || draft.sending)) {
+    return "Send or clear your unsent chat drafts before installing.";
+  }
   if (engineStore.get().busy) return "Wait for the current model or runtime task to finish.";
   const discovery = localModelsStore.get().phase;
   if (discovery === "indexing") return "Wait for Raptor to finish registering local models.";

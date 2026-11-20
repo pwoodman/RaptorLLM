@@ -8,6 +8,22 @@ vi.mock("../api", async (original) => ({
 beforeEach(() => { vi.resetModules(); mocks.saved.mockReset(); mocks.saved.mockResolvedValue([]); localStorage.clear(); });
 
 describe("first-load optimization offer", () => {
+  it("allows a cancelled load to be opened again", async () => {
+    const first = await import("./firstLoad");
+    const entry = modelEntry();
+    const decision = first.offerFirstLoadOptimization(entry);
+    await vi.waitFor(() => expect(first.firstLoadStore.get().entry).toEqual(entry));
+
+    first.chooseFirstLoadOptimization(null);
+    expect(await decision).toBeNull();
+    expect(first.firstLoadStore.get().entry).toBeNull();
+
+    const retry = first.offerFirstLoadOptimization(entry);
+    await vi.waitFor(() => expect(first.firstLoadStore.get().entry).toEqual(entry));
+    first.chooseFirstLoadOptimization(false);
+    expect(await retry).toBe(false);
+  });
+
   it("offers an unoptimized model once and remembers Skip across app sessions", async () => {
     const first = await import("./firstLoad");
     const entry = modelEntry();

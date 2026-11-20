@@ -1,4 +1,4 @@
-import { useEffect, useState, type RefObject } from "react";
+import { useEffect, useRef, useState, type RefObject } from "react";
 import { MessageSquare } from "lucide-react";
 import type { ReplyStats, StoredMessage } from "../../api";
 import { useStore } from "../../hooks/useStore";
@@ -115,10 +115,11 @@ function PendingItem({ pending, onRetry }: { pending: PendingReply; onRetry: () 
 }
 
 /** The conversation's messages. `containerRef` is the scroll box, which the find bar searches. */
-export function MessageList({ containerRef }: { containerRef: RefObject<HTMLDivElement> }) {
+export function MessageList({ containerRef, blocked }: { containerRef: RefObject<HTMLDivElement>; blocked: boolean }) {
   const active = useStore(chatStore, (s) => s.active);
   const pending = useStore(chatStore, (s) => s.pending);
   const [actionError, setActionError] = useState<string | null>(null);
+  const followLatest = useRef(true);
 
   const showPending = pending !== null && active !== null && pending.conversationId === active.id;
   const streaming = showPending && isGenerating(pending);
@@ -127,23 +128,23 @@ export function MessageList({ containerRef }: { containerRef: RefObject<HTMLDivE
 
   const focusMessageId = useStore(chatStore, (s) => s.focusMessageId);
 
+  useEffect(() => {
+    const el = containerRef.current;
+    if (focusMessageId === null && followLatest.current && el) el.scrollTop = el.scrollHeight;
+  }, [messageCount, pendingLength, containerRef, focusMessageId]);
+
   // A search result opens its conversation at the message that matched, not at the bottom.
   useEffect(() => {
     if (focusMessageId === null || active === null) return;
     const el = containerRef.current?.querySelector(`[data-find-block="${CSS.escape(focusMessageId)}"]`);
     if (el) {
+      followLatest.current = false;
       el.scrollIntoView?.({ block: "center" });
       el.classList.add("search-focus");
       window.setTimeout(() => el.classList.remove("search-focus"), 2200);
     }
     chatStore.set({ focusMessageId: null });
   }, [focusMessageId, active, containerRef]);
-
-  useEffect(() => {
-    if (chatStore.get().focusMessageId !== null) return;
-    const el = containerRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
-  }, [messageCount, pendingLength, containerRef]);
 
   if (active === null) return null;
   const last = active.messages[active.messages.length - 1];
@@ -163,11 +164,13 @@ export function MessageList({ containerRef }: { containerRef: RefObject<HTMLDivE
       aria-live="off"
       aria-busy={streaming}
       aria-label="Conversation messages"
+      onScroll={(event) => {
+        const box = event.currentTarget;
+        followLatest.current = box.scrollHeight - box.scrollTop - box.clientHeight < 48;
+      }}
     >
-      {active.messages.length === 0 && !showPending && (
-        <EmptyState icon={MessageSquare} title="No messages yet">
-          Type below to start. Replies come only from the loaded model.
-        </EmptyState>
+      {active.messages.length === 0 && !showPending && !blocked && (
+        <EmptyState icon={MessageSquare} title="What would you like to work on?" />
       )}
       {active.messages.map((message) => (
         <MessageItem key={message.id} message={message} />

@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactElement } from "react";
+import { useEffect, useLayoutEffect, useState, type ReactElement } from "react";
 import { Notice } from "./components/Notice";
 import { ShortcutsDialog } from "./components/ShortcutsDialog";
 import { CpuFallbackBanner } from "./components/models/CpuFallbackBanner";
@@ -29,6 +29,9 @@ export default function App() {
 
   useEffect(() => startSync(), []);
   useEffect(() => startIdleUpdates(), []);
+  useLayoutEffect(() => {
+    window.scrollTo(0, 0);
+  }, [page]);
   useGlobalShortcuts({ onShowHelp: () => setHelpOpen(true) });
 
   return (
@@ -36,7 +39,7 @@ export default function App() {
       <a className="skip-link" href="#main">
         Skip to content
       </a>
-      <Sidebar />
+      <Sidebar onShowShortcuts={() => setHelpOpen(true)} />
       <main id="main" className={`main ${page === "chats" ? "main-fill" : ""}`} tabIndex={-1}>
         <CpuFallbackBanner />
         <FirstLoadOptimization />

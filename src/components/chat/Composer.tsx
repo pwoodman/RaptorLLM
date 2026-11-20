@@ -3,15 +3,12 @@ import { Paperclip, Send, Square, X } from "lucide-react";
 import { useStore } from "../../hooks/useStore";
 import {
   checkAttachmentFile,
-  formatKb,
-  MAX_ATTACHMENT_BYTES,
-  MAX_ATTACHMENTS,
   readAttachment,
   type Attachment,
 } from "../../lib/attachments";
 import { messageOf } from "../../lib/errors";
 import { formatBytes } from "../../lib/format";
-import { chatStore, isGenerating, sendMessage, stopGeneration } from "../../state/chat";
+import { chatStore, draftFor, isGenerating, sendMessage, stopGeneration, updateDraft } from "../../state/chat";
 import { Notice } from "../Notice";
 import { LongAnswerToggle } from "./LongAnswerToggle";
 import { ThinkingEffort } from "./ThinkingEffort";
@@ -37,29 +34,32 @@ async function readFiles(files: File[], attached: number): Promise<{ added: Atta
   return { added, problems };
 }
 
-export function Composer({ blockedReason }: { blockedReason: string | null }) {
+export function Composer({ conversationId, blockedReason }: { conversationId: string; blockedReason: string | null }) {
   const generating = useStore(chatStore, (s) => isGenerating(s.pending));
-  const [draft, setDraft] = useState("");
-  const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const sendingFromOtherChat = useStore(chatStore, (s) =>
+    [...s.drafts].some(([id, draft]) => id !== conversationId && draft.sending),
+  );
+  const { text: draft, attachments, reading, sending } = useStore(chatStore, (s) => draftFor(conversationId, s));
   const [dragging, setDragging] = useState(false);
-  const [reading, setReading] = useState(false);
   const [problems, setProblems] = useState<string[]>([]);
-  const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const textareaId = useId();
   const fileInputId = useId();
   const disabled = blockedReason !== null;
 
   async function addFiles(files: File[]) {
-    if (files.length === 0) return;
-    setReading(true);
+    const current = draftFor(conversationId);
+    if (disabled || current.reading || current.sending || files.length === 0) return;
+    updateDraft(conversationId, { reading: true });
     setProblems([]);
     try {
-      const result = await readFiles(files, attachments.length);
-      if (result.added.length > 0) setAttachments((current) => [...current, ...result.added]);
+      const result = await readFiles(files, current.attachments.length);
+      if (draftFor(conversationId).reading) {
+        updateDraft(conversationId, { attachments: [...current.attachments, ...result.added] });
+      }
       setProblems(result.problems);
     } finally {
-      setReading(false);
+      updateDraft(conversationId, { reading: false });
     }
   }
 
@@ -70,18 +70,23 @@ export function Composer({ blockedReason }: { blockedReason: string | null }) {
   }
 
   async function submit() {
-    if (disabled || sending || generating || reading) return;
-    if (draft.trim() === "" && attachments.length === 0) return;
-    setSending(true);
+    const current = draftFor(conversationId);
+    if (disabled || current.sending || sendingFromOtherChat || generating || current.reading) return;
+    if (current.text.trim() === "" && current.attachments.length === 0) return;
+    updateDraft(conversationId, { sending: true });
     setError(null);
-    const result = await sendMessage(draft, attachments);
-    setSending(false);
-    if (result.ok) {
-      setDraft("");
-      setAttachments([]);
-      setProblems([]);
-    } else {
-      setError(result.reason);
+    try {
+      const result = await sendMessage(current.text, current.attachments);
+      if (result.ok) {
+        updateDraft(conversationId, { text: "", attachments: [] });
+        setProblems([]);
+      } else {
+        setError(result.reason);
+      }
+    } catch (e) {
+      setError(messageOf(e));
+    } finally {
+      updateDraft(conversationId, { sending: false });
     }
   }
 
@@ -95,11 +100,10 @@ export function Composer({ blockedReason }: { blockedReason: string | null }) {
     }
   }
 
-  const canSend = !disabled && !sending && !reading && (draft.trim() !== "" || attachments.length > 0);
+  const canSend = !disabled && !sending && !sendingFromOtherChat && !reading && (draft.trim() !== "" || attachments.length > 0);
 
   return (
     <form
-      data-unsaved-work={draft.trim() !== "" || attachments.length > 0 || reading ? "true" : undefined}
       className={`composer ${dragging ? "composer-drop" : ""}`}
       onSubmit={(e: FormEvent) => {
         e.preventDefault();
@@ -108,7 +112,7 @@ export function Composer({ blockedReason }: { blockedReason: string | null }) {
       onDragOver={(e) => {
         if (!Array.from(e.dataTransfer.types).includes("Files")) return;
         e.preventDefault();
-        setDragging(true);
+        if (!disabled && !reading && !sending) setDragging(true);
       }}
       onDragLeave={(e) => {
         if (e.currentTarget.contains(e.relatedTarget as Node | null)) return;
@@ -127,7 +131,8 @@ export function Composer({ blockedReason }: { blockedReason: string | null }) {
                 type="button"
                 className="icon-btn"
                 aria-label={`Remove ${a.name}`}
-                onClick={() => setAttachments((current) => current.filter((_, j) => j !== i))}
+                disabled={reading || sending}
+                onClick={() => updateDraft(conversationId, { attachments: attachments.filter((_, j) => j !== i) })}
               >
                 <X size={13} aria-hidden="true" />
               </button>
@@ -141,17 +146,18 @@ export function Composer({ blockedReason }: { blockedReason: string | null }) {
       </label>
       <textarea
         id={textareaId}
-        rows={3}
+        rows={2}
         value={draft}
         disabled={disabled}
+        readOnly={sending}
         placeholder={
           disabled
             ? "Load a model to start chatting"
             : dragging
               ? "Drop text or code files here"
-              : "Message your local model... (drop text or code files here)"
+              : "Message your local model"
         }
-        onChange={(e) => setDraft(e.target.value)}
+        onChange={(e) => updateDraft(conversationId, { text: e.target.value })}
         onKeyDown={(e) => {
           if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
             e.preventDefault();
@@ -162,25 +168,24 @@ export function Composer({ blockedReason }: { blockedReason: string | null }) {
 
       <div className="composer-foot">
         <div className="composer-hints">
-          <ThinkingEffort />
-          <LongAnswerToggle />
-          <span className="muted small">Enter sends. Shift + Enter adds a new line. Ctrl + / lists shortcuts.</span>
-          <label htmlFor={fileInputId} className="btn btn-ghost btn-sm attach-button">
-            <Paperclip size={14} aria-hidden="true" /> Attach text file
-          </label>
           <input
             id={fileInputId}
             type="file"
             multiple
             className="sr-only"
             accept=".txt,.md,.json,.csv,.yaml,.yml,.toml,.xml,.log,.ts,.tsx,.js,.jsx,.py,.rs,.go,.java,.c,.h,.cpp,.hpp,.cs,.rb,.php,.sh,.ps1,.sql,.html,.css,text/*"
-            disabled={disabled || reading}
+            disabled={disabled || reading || sending}
             onChange={(e) => {
               const files = Array.from(e.target.files ?? []);
               e.target.value = "";
               void addFiles(files);
             }}
           />
+          <label htmlFor={fileInputId} className="btn btn-ghost attach-button" aria-disabled={disabled || reading || sending}>
+            <Paperclip size={14} aria-hidden="true" /> Attach text file
+          </label>
+          <ThinkingEffort />
+          <LongAnswerToggle />
         </div>
         {generating ? (
           <button type="button" className="btn btn-danger" onClick={() => void stop()}>
@@ -199,12 +204,6 @@ export function Composer({ blockedReason }: { blockedReason: string | null }) {
           {problem}
         </Notice>
       ))}
-      {attachments.length > 0 && (
-        <p className="muted small">
-          Attached files are sent inside delimited blocks. Limits: {formatKb(MAX_ATTACHMENT_BYTES)} per file,{" "}
-          {MAX_ATTACHMENTS} files per message.
-        </p>
-      )}
       {error !== null && (
         <Notice tone="danger" title="Message not sent">
           {error}

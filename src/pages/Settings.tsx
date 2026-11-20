@@ -45,11 +45,7 @@ export default function SettingsPage() {
 
   return (
     <div className="page">
-      <PageHeader
-        eyebrow="Preferences and runtime"
-        title="Settings"
-        description="Make Raptor your own. Appearance changes apply right away; other controls explain when they take effect."
-      />
+      <PageHeader title="Settings" />
 
       {view?.notes.map((note) => (
         <p key={note} className="muted small">

@@ -4,7 +4,7 @@ import { createStore } from "./store";
 const KEY = "raptor.optimization-intro.v1";
 const seen = new Set<string>();
 export const firstLoadStore = createStore<{ entry: ModelEntry | null }>({ entry: null });
-let resolveChoice: ((optimize: boolean) => void) | null = null;
+let resolveChoice: ((optimize: boolean | null) => void) | null = null;
 const identity = (entry: ModelEntry) => entry.sha256 || entry.id;
 
 function storedIdentities(): string[] {
@@ -25,8 +25,8 @@ export function rememberOptimizationOffer(entry: ModelEntry): void {
   } catch { /* The session still remembers the choice when local storage is unavailable. */ }
 }
 
-/** Only the first unoptimized load offers tuning. Skipping is remembered per model content. */
-export async function offerFirstLoadOptimization(entry: ModelEntry): Promise<boolean> {
+/** Only the first unoptimized load offers tuning. Null cancels the load without remembering a choice. */
+export async function offerFirstLoadOptimization(entry: ModelEntry): Promise<boolean | null> {
   if (wasOffered(entry) || entry.gguf.architecture === "dflash") return false;
   try {
     const saved = await api.models.savedTuning(entry.id);
@@ -38,16 +38,16 @@ export async function offerFirstLoadOptimization(entry: ModelEntry): Promise<boo
     // An optional speed check must not prevent the normal model load from diagnosing problems.
     return false;
   }
-  return new Promise<boolean>((resolve) => {
+  return new Promise<boolean | null>((resolve) => {
     resolveChoice = resolve;
     firstLoadStore.set({ entry });
   });
 }
 
-export function chooseFirstLoadOptimization(optimize: boolean): void {
+export function chooseFirstLoadOptimization(optimize: boolean | null): void {
   const entry = firstLoadStore.get().entry;
   if (!entry || !resolveChoice) return;
-  if (!optimize) rememberOptimizationOffer(entry);
+  if (optimize === false) rememberOptimizationOffer(entry);
   const resolve = resolveChoice;
   resolveChoice = null;
   firstLoadStore.set({ entry: null });

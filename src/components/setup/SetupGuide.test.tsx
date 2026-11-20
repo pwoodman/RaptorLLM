@@ -138,8 +138,8 @@ describe("SetupGuide", () => {
     const list = await screen.findByRole("list");
     expect(within(list).getAllByRole("listitem")).toHaveLength(4);
 
-    await user.click(screen.getByRole("button", { name: "Choose a model" }));
-    expect(uiStore.get().page).toBe("models");
+    await user.click(screen.getByRole("button", { name: "Browse models" }));
+    expect(uiStore.get()).toMatchObject({ page: "models", modelView: "discover" });
 
     await user.click(screen.getByRole("button", { name: "Open storage settings" }));
     expect(uiStore.get()).toMatchObject({ page: "settings", anchor: "storage" });

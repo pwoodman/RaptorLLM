@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { sendMessage } from "../../state/chat";
+import { chatStore, sendMessage } from "../../state/chat";
 import { Composer } from "./Composer";
 
 vi.mock("../../state/chat", async (importOriginal) => {
@@ -19,11 +19,12 @@ function textFile(name: string, body: string): File {
 describe("Composer attachments", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    chatStore.set({ drafts: new Map() });
   });
 
   it("attaches a dropped text file as a chip and sends it inside a delimited block", async () => {
     const user = userEvent.setup();
-    render(<Composer blockedReason={null} />);
+    render(<Composer conversationId="c1" blockedReason={null} />);
 
     const form = screen.getByRole("form", { name: "Message composer" });
     fireEvent.drop(form, { dataTransfer: { files: [textFile("lib.ts", "export const x = 1;")], types: ["Files"] } });
@@ -42,7 +43,7 @@ describe("Composer attachments", () => {
   it("refuses an image with a clear message and attaches nothing", async () => {
     // applyAccept off: the file picker filter would hide the image before the app ever sees it.
     const user = userEvent.setup({ applyAccept: false });
-    render(<Composer blockedReason={null} />);
+    render(<Composer conversationId="c1" blockedReason={null} />);
 
     const input = screen.getByLabelText("Attach text file");
     await user.upload(input, new File([new Uint8Array([137, 80, 78, 71])], "shot.png", { type: "image/png" }));
@@ -54,7 +55,7 @@ describe("Composer attachments", () => {
 
   it("can remove an attached file before sending", async () => {
     const user = userEvent.setup();
-    render(<Composer blockedReason={null} />);
+    render(<Composer conversationId="c1" blockedReason={null} />);
     await user.upload(screen.getByLabelText("Attach text file"), textFile("notes.md", "# notes"));
 
     await user.click(await screen.findByRole("button", { name: "Remove notes.md" }));
@@ -63,7 +64,24 @@ describe("Composer attachments", () => {
   });
 
   it("keeps Send disabled with no text and no files", () => {
-    render(<Composer blockedReason={null} />);
+    render(<Composer conversationId="c1" blockedReason={null} />);
     expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
+  });
+
+  it("keeps text and attachments with their own chat after navigating away", async () => {
+    const user = userEvent.setup();
+    const { rerender } = render(<Composer key="c1" conversationId="c1" blockedReason={null} />);
+    await user.type(screen.getByRole("textbox", { name: "Message" }), "Review these notes");
+    await user.upload(screen.getByLabelText("Attach text file"), textFile("notes.md", "# Notes"));
+    expect(await screen.findByText("notes.md")).toBeInTheDocument();
+
+    rerender(<Composer key="c2" conversationId="c2" blockedReason={null} />);
+    expect(screen.getByRole("textbox", { name: "Message" })).toHaveValue("");
+    expect(screen.queryByText("notes.md")).not.toBeInTheDocument();
+    await user.type(screen.getByRole("textbox", { name: "Message" }), "A different prompt");
+
+    rerender(<Composer key="c1" conversationId="c1" blockedReason={null} />);
+    expect(screen.getByRole("textbox", { name: "Message" })).toHaveValue("Review these notes");
+    expect(screen.getByText("notes.md")).toBeInTheDocument();
   });
 });

@@ -1,11 +1,13 @@
 import { Boxes, CheckCircle2, CircleAlert, Cpu, HardDrive, RotateCw, Wrench, type LucideIcon } from "lucide-react";
+import type { ReactNode } from "react";
 import { setupStatus, type SetupCheck, type SetupStatus } from "../../api";
 import { useAsyncResource } from "../../hooks/useAsyncResource";
 import { useStore } from "../../hooks/useStore";
 import { messageOf } from "../../lib/errors";
 import { formatBytes } from "../../lib/format";
 import { engineStore } from "../../state/engine";
-import { openSettings, uiStore } from "../../state/ui";
+import { libraryStore } from "../../state/library";
+import { openModelImport, openModels, openSettings } from "../../state/ui";
 import { LoadingState } from "../AsyncState";
 import { Notice } from "../Notice";
 import { Panel } from "../Panel";
@@ -33,16 +35,18 @@ export function setupNeedsAttention(status: SetupStatus): boolean {
  * First-run checklist, shown on Chats and Models while something is missing. It reads state only.
  * Installing the runtime needs an explicit click and a confirmation. Nothing starts on its own.
  */
-export function SetupGuide({ onModelAction }: { onModelAction?: (action: "discover" | "library") => void } = {}) {
+export function SetupGuide({
+  chatFallback, onModelsPage = false,
+}: { chatFallback?: ReactNode; onModelsPage?: boolean } = {}) {
   const status = useStore(engineStore, (s) => s.status);
-  const page = useStore(uiStore, (s) => s.page);
-  const setup = useAsyncResource(() => setupStatus(), [status]);
+  const modelCount = useStore(libraryStore, (s) => s.models?.length ?? null);
+  const setup = useAsyncResource(() => setupStatus(), [status, modelCount]);
 
   if (setup.loading && setup.data === null && setup.error === null) {
     return <LoadingState label="Checking setup..." />;
   }
   if (setup.error !== null) {
-    return (
+    return chatFallback ?? (
       <Notice
         tone="warn"
         title="Setup check unavailable"
@@ -56,8 +60,14 @@ export function SetupGuide({ onModelAction }: { onModelAction?: (action: "discov
       </Notice>
     );
   }
-  const data = setup.data;
-  if (data === null || !setupNeedsAttention(data)) return null;
+  const data = onModelsPage && setup.data
+    ? { ...setup.data, checks: setup.data.checks.filter((check) => check.id !== "model") }
+    : setup.data;
+  if (data === null || !setupNeedsAttention(data)) return chatFallback ?? null;
+
+  if (chatFallback && !data.runtime_needs_confirmation && !data.checks.some((c) => REQUIRED.includes(c.id) && !c.ok)) {
+    return chatFallback;
+  }
 
   const checks = data.checks.filter((c) => REQUIRED.includes(c.id) || !c.ok);
   const byId = new Map(checks.map((check) => [check.id, check]));
@@ -68,9 +78,9 @@ export function SetupGuide({ onModelAction }: { onModelAction?: (action: "discov
   return (
     <Panel
       id="setup-guide"
-      title="Let's get Raptor ready"
+      title={nextCheck ? stepTitle(nextCheck.id) : "Model setup"}
       icon={<Wrench size={18} aria-hidden="true" />}
-      description="We'll walk you through what you need. Downloads only start when you choose them."
+      description={nextCheck && stepHelp(nextCheck, data)}
     >
       {data.degraded && data.selected_runtime && (
         <Notice tone="danger" title="CPU build in use: generation will be slow">
@@ -78,18 +88,11 @@ export function SetupGuide({ onModelAction }: { onModelAction?: (action: "discov
         </Notice>
       )}
       {nextCheck && (
-        <div className="setup-next-step">
-          <span className="setup-step-label">Your next step</span>
-          <h3>{stepTitle(nextCheck.id)}</h3>
-          <p className="muted small">{stepHelp(nextCheck, data)}</p>
-          <ActionFor
-            check={nextCheck}
-            data={data}
-            onChanged={setup.reload}
-            onModelsPage={page === "models"}
-            onModelAction={onModelAction}
-          />
-        </div>
+        <ActionFor
+          check={nextCheck}
+          data={data}
+          onChanged={setup.reload}
+        />
       )}
       <details className="setup-details">
         <summary>See all setup details</summary>
@@ -100,8 +103,6 @@ export function SetupGuide({ onModelAction }: { onModelAction?: (action: "discov
               check={check}
               data={data}
               onChanged={setup.reload}
-              onModelsPage={page === "models"}
-              onModelAction={onModelAction}
               hasStepAbove={check.id === nextCheck?.id}
             />
           ))}
@@ -134,7 +135,7 @@ function stepHelp(check: SetupCheck, data: SetupStatus): string {
     case "runtime": return data.available_runtime?.degraded
       ? "This small download lets Raptor run models. The available option uses your CPU and will be slower."
       : "This small one-time download lets Raptor run models. We'll select the best available option for this computer.";
-    case "model": return "Models are the AI brains you chat with. Pick a recommended download or bring a GGUF file you already have.";
+    case "model": return "Download a model or add a GGUF file from this computer.";
     case "gpu": return `${check.detail}. You can review the runtime choice in Settings.`;
     case "performance_memory": return check.detail;
   }
@@ -144,8 +145,6 @@ interface SetupItemProps {
   check: SetupCheck;
   data: SetupStatus;
   onChanged: () => void;
-  onModelsPage: boolean;
-  onModelAction?: (action: "discover" | "library") => void;
   /** The same check is the panel's "next step" above, so repeating the action here duplicates it. */
   hasStepAbove: boolean;
 }
@@ -154,8 +153,6 @@ function SetupItem({
   check,
   data,
   onChanged,
-  onModelsPage,
-  onModelAction,
   hasStepAbove,
 }: SetupItemProps) {
   const Icon = ICONS[check.id];
@@ -178,8 +175,6 @@ function SetupItem({
             check={check}
             data={data}
             onChanged={onChanged}
-            onModelsPage={onModelsPage}
-            onModelAction={onModelAction}
           />
         )}
       </div>
@@ -204,8 +199,6 @@ function ActionFor({
   check,
   data,
   onChanged,
-  onModelsPage,
-  onModelAction,
 }: Omit<SetupItemProps, "hasStepAbove">) {
   switch (check.id) {
     case "runtime":
@@ -218,22 +211,15 @@ function ActionFor({
         </button>
       );
     case "model":
-      if (onModelsPage) {
-        return (
-          <div className="button-row">
-            <button type="button" className="btn btn-sm btn-primary" onClick={() => onModelAction?.("discover")}>
-              Browse recommended models
-            </button>
-            <button type="button" className="btn btn-sm" onClick={() => onModelAction?.("library")}>
-              I already have a model file
-            </button>
-          </div>
-        );
-      }
       return (
-        <button type="button" className="btn btn-sm btn-primary" onClick={() => uiStore.set({ page: "models" })}>
-          Choose a model
-        </button>
+        <div className="button-row">
+          <button type="button" className="btn btn-primary" onClick={() => openModels("discover")}>
+            Browse models
+          </button>
+          <button type="button" className="btn" onClick={openModelImport}>
+            Add local models
+          </button>
+        </div>
       );
     case "hardware":
       return (

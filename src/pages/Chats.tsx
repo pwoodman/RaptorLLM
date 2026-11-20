@@ -2,14 +2,13 @@ import { useEffect, useState } from "react";
 import { MessageSquarePlus } from "lucide-react";
 import { ChatPanel } from "../components/chat/ChatPanel";
 import { ConversationList } from "../components/chat/ConversationList";
-import { EmptyState, ErrorState } from "../components/AsyncState";
+import { ErrorState } from "../components/AsyncState";
 import { ChatUnavailable } from "../components/chat/ChatUnavailable";
 import { SetupGuide } from "../components/setup/SetupGuide";
 import { useStore } from "../hooks/useStore";
 import { chatStore, createConversation, refreshList } from "../state/chat";
 import { engineStore, inferenceBlockReason } from "../state/engine";
 import { refreshLibrary } from "../state/library";
-import { uiStore } from "../state/ui";
 
 function ChatWelcome() {
   const status = useStore(engineStore, (s) => s.status);
@@ -28,19 +27,18 @@ function ChatWelcome() {
 
   return (
     <div className="chat-welcome">
-      <SetupGuide />
-      {blocked !== null && <ChatUnavailable reason={blocked} />}
-      <EmptyState
-        icon={MessageSquarePlus}
-        title="Pick a conversation or start a new one"
-        action={
+      {blocked !== null ? (
+        <SetupGuide chatFallback={<ChatUnavailable reason={blocked} />} />
+      ) : (
+        <div className="welcome-content">
+          <MessageSquarePlus size={28} aria-hidden="true" />
+          <h1>Start a local chat</h1>
+          <p>Open a conversation or start a new one. Chats are saved on this computer.</p>
           <button type="button" className="btn btn-primary" onClick={() => void create()}>
             New chat
           </button>
-        }
-      >
-        Conversations are saved on this machine.
-      </EmptyState>
+        </div>
+      )}
       {error !== null && <ErrorState error={error} />}
     </div>
   );
@@ -58,7 +56,7 @@ export default function ChatsPage() {
     <div className="chats">
       <ConversationList />
       <section className="chat-main" aria-label="Chat">
-        {activeId === null ? <ChatWelcome /> : <ChatPanel />}
+        {activeId === null ? <ChatWelcome /> : <ChatPanel key={activeId} />}
       </section>
     </div>
   );

@@ -106,11 +106,11 @@ export function inferenceBlockReason(status: EngineStatus | null, statusError: s
     case "degraded":
       return null;
     case "stopped":
-      return "The inference server is not running. Load a model from Models to start it.";
+      return "The inference server is not running.";
     case "starting":
       return "The inference server is starting. Wait for it to report ready.";
     case "crashed":
-      return `The inference server crashed: ${state.reason}. Load a model again from Models.`;
+      return `The inference server crashed: ${state.reason}`;
   }
 }
 
@@ -136,7 +136,9 @@ export async function loadModel(
   engineStore.set({ busy: "preparing" });
   try {
     const entry = libraryStore.get().models?.find((model) => model.id === modelId);
-    if (entry && await offerFirstLoadOptimization(entry)) {
+    const optimize = entry ? await offerFirstLoadOptimization(entry) : false;
+    if (optimize === null) return;
+    if (optimize && entry) {
       engineStore.set({ busy: "optimizing" });
       // Optimize & chat includes replacing the currently running model, just like a normal load.
       const status = await api.models.unload();
