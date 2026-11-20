@@ -101,6 +101,7 @@ export function settingsView(overrides: Partial<SettingsViewV2> = {}): SettingsV
     notes: [],
     embedding_model: null,
     allow_cpu_fallback: false,
+    allow_ram_kv: false,
     ...overrides,
   };
 }

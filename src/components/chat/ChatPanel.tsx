@@ -12,6 +12,7 @@ import { Notice } from "../Notice";
 import { LoadFailureCard } from "../models/LoadFailureCard";
 import { SetupGuide } from "../setup/SetupGuide";
 import { ConversationFind } from "./ConversationFind";
+import { LoadBenchmarkBar } from "./LoadBenchmarkBar";
 import { Composer } from "./Composer";
 import { ContextMeter } from "./ContextMeter";
 import { MessageList } from "./MessageList";
@@ -99,6 +100,7 @@ export function ChatPanel() {
         </div>
       </header>
 
+      <LoadBenchmarkBar />
       {modelError !== null && <LoadFailureCard error={modelError} />}
       {exportError !== null && (
         <Notice tone="danger" title="Export failed">

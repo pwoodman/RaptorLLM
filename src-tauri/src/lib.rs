@@ -161,6 +161,7 @@ pub fn run() {
             commands::presets::presets_delete,
             commands::presets::presets_set_default,
             commands::settings::settings_set_allow_cpu_fallback,
+            commands::settings::settings_set_allow_ram_kv,
             commands::settings::settings_set_parallel_slots,
             commands::settings::settings_set_thinking_effort,
             commands::models::models_search,

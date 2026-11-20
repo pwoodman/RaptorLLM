@@ -1580,6 +1580,8 @@ export interface SettingsViewV2 extends SettingsView {
   embedding_model: string | null;
   /** Off by default. */
   allow_cpu_fallback: boolean;
+  /** Off by default. Keep the KV cache in system RAM when no VRAM plan fits (--no-kv-offload). */
+  allow_ram_kv?: boolean;
   /** Requests llama-server works on at once (1-8). Absent in older shells. */
   parallel_slots?: number;
   /** Default thinking effort for thinking models. Absent in older shells (Medium). */
@@ -1595,7 +1597,11 @@ export const settingsSetParallelSlots = (slots: number): Promise<SettingsViewV2>
 export const settingsSetAllowCpuFallback = (enabled: boolean): Promise<SettingsViewV2> =>
   call<SettingsViewV2>("settings_set_allow_cpu_fallback", { enabled });
 
-/** `settings_get` as the shell returns it: includes `embedding_model` and `allow_cpu_fallback`. */
+/** Allow a load to keep the KV cache in system RAM when no VRAM plan exists. Off by default. */
+export const settingsSetAllowRamKv = (enabled: boolean): Promise<SettingsViewV2> =>
+  call<SettingsViewV2>("settings_set_allow_ram_kv", { enabled });
+
+/** `settings_get` as the shell returns it: includes `embedding_model`, `allow_cpu_fallback` and `allow_ram_kv`. */
 export const settingsGet = (): Promise<SettingsViewV2> => call<SettingsViewV2>("settings_get");
 
 // Architecture support -------------------------------------------------------------

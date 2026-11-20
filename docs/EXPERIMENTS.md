@@ -601,3 +601,108 @@ matching the earlier observation that it only pays off when the answer echoes th
   floor is unchanged: the recommender shrinks the window, never below the floor, when the
   model or the hardware cannot hold the new default. No measured speed data yet — the change
   is a default-policy change, not a measurement.
+
+## KV cache in system RAM (`--no-kv-offload`) measured on hardware (2026-11-20, RX 9060 XT 16 GB, ROCm b12374-patched, Nanbeige4.3-33B-IQ2_XXS 9.38 GiB, 52/52 layers on the GPU, flash attention on, warm page cache, `-lv 4`, `svrbench.py`, prompt 4,096 tokens, 64-128 generated tokens, dwm holding ~5.6 GiB desktop VRAM as usual)
+
+Driver is AMD's; "free" below is what `ggml-cuda`/`ROCm0` reports (16,146 MiB of 16,304).
+
+| Context | KV placement | pp tok/s | gen tok/s | Notes |
+|---|---|---|---|---|
+| 16,384 | f16 in VRAM (default) | 682 (2K prompt) | 21.5 / 19.7 | fits easily |
+| 16,384 | f16 in RAM (`-nkvo`) | 604 / 538 | **7.4 / 4.4** | works, ~3-4.5x slower |
+| 32,768 | f16 in VRAM | 314 | 15.4 | projected 15,983 MiB vs 16,146 free: fits, but below llama.cpp's own 1,024 MiB free target |
+| 32,768 | f16 in RAM (`-nkvo`) | 578 | 6.1 | KV 13.3 GiB on the host bus |
+| 65,536 | f16 in VRAM (oversubscribed, untouched flags) | 313 | 13.8 | projected 22,671 MiB: runs by spilling ~6.5 GiB into Windows shared memory |
+| 65,536 | f16 in RAM (`-nkvo`) | 578 | 6.1 | |
+| 65,536 | q4_0 KV in RAM (`-nkvo`) | 563 | 7.0 | 4-bit does not help: the bottleneck is the per-token host round-trip, not cache size |
+| **65,536** | **q4_0 KV in VRAM** | **647** | **19.3** | projected 13,248 MiB, 2,897 MiB headroom — the right tool |
+| 131,072 | q4_0 in VRAM (spills ~1.2 GiB) | 278 | 18.0 | projected 17,312 vs 16,146 free; driver serves the overflow |
+
+- **Works: `-nkvo` loads and generates on this card.** No flag error, no crash at 16K/32K/64K. Generation is 3-4.5x slower than a VRAM-resident cache at the same context. Prompt processing is not hurt (538-578 tok/s vs 313-682): the penalty is per generated token.
+- **The right large-window configuration on this card is q4_0 KV resident in VRAM**, not RAM-KV: 19.3 tok/s at 64K (and 128K still runs at 18.0 via a small driver spill). The existing planner already prefers q4_0 when f16 does not fit; this measurement confirms that ordering is also the fast one.
+- **Windows' shared-memory spill beats `-nkvo`** (13.8 vs 6.1 tok/s at 64K) but is uncontrolled: the driver decides what and when to move, and the earlier BROKEN entry shows it can collapse generation on much larger spills. The app does not model spill; it is not something we can recommend deliberately.
+- **RAM-KV is an opt-in escape hatch, nothing more.** It only earns its keep when the requested context cannot fit VRAM at any KV quantization *and* the user accepts 3-4.5x slower generation in exchange for a deterministic, driver-independent memory layout. The app keeps it behind a setting that defaults off.
+- UNTESTED: RAM-KV end-to-end through the app (toggle -> recommend -> spawn). The numbers above are raw flag-level benchmarks, not an app run.
+
+## Unresolved from the 2026-11-19 session (logged so it is not lost)
+
+- **RESOLVED (2026-11-20): quantized-KV generation at depth looked nondeterministic; it is not a KV-quant kernel defect.** Fresh runs on an idle GPU (llama-bench, IQ2_XXS, FA on, `-ngl 99`): d4096 q4_0 tg128 = 19.42/19.39/19.38/19.38 across four separate processes (±0.05), d8192 f16 18.8 / q4_0 17.4 / q8_0 17.4-18.2, d2048 f16 21.4 / q4_0 20.7. See the late-2026-11-20 section below for the root-cause analysis. One residual anomaly (kv-depth.log task 129) remains unexplained; see below.
+
+## Research notes (web, 2026-11-20; leads, not measurements)
+
+- **llama.cpp b12430 (2026-11-16) fixes a MoE prompt-processing regression on HIP/AMD** (commit 05db09a, `mmq.cuh` grid order back to row-tiles-innermost on HIP; root cause issue #31603: #29948's MMQ change cost ~20% MoE prefill, measured on gfx1010/RDNA1 with experts on CPU; gfx1200 not measured). Our pinned b12374 post-dates #29948, so MoE prompt processing at Ornith/flint rates may be affected. Not adopted: MoE tg was unchanged in the report, our models run fully on the GPU (the report used `-ot exps=CPU`), and the pinned build is measured. Candidate for the next deliberate runtime bump; verify with `llama-bench -p 512 -fa 1` on Ornith before switching. b12430 also ships Windows x64 ROCm builds. Sources: commit 05db09a4, issue #31603, release b12430.
+- **Vulkan vs ROCm on gfx1200/gfx1201 is build- and driver-dependent; no blanket winner.** Same-GPU data point (RX 9060 XT, Arch, ROCm 7.2.4 vs RADV, llama-2-7b Q4_0, fa=1, oct 2026, llama.cpp f1cee99, Discussion #15021): pp512 3,015 (ROCm) vs 3,228 (Vulkan), tg128 70.2 vs 74.0, and ROCm tg is the same with or without FA. On R9700/gfx1201 (Fedora 44, ROCm 7.1.1 vs RADV): pp512 equal (~4,300), ROCm loses at long prompts (2,755 vs 4,236 at pp8192), Vulkan tg +8%. On RX 9070 XT (gfx1201, llama.cpp b10034): Vulkan tg 132 vs ROCm 122. On RX 9070 XT (earlier commit): ROCm pp 2.4x Vulkan on dense qwen3-32B. Our own Windows numbers (2026-11-14, this card): ROCm pp much faster, Vulkan tg faster on MoE (Granite/flint), Vulkan ~35-45% faster tg in-app for Ornith. FA on ROCm matters: pp512 +14% on gfx1200 (2,641 → 3,015). Net: keep both backends; the app's per-model Vulkan backend remains the MoE-decode lever; not re-measured since. Sources: github.com/ggml-org/llama.cpp discussion #15021.
+- **Flash-attention rocWMMA build flag — tested, dead end.** b12374's source contains no reference to `GGML_HIP_ROCWMMA_FATTN` at all (the CMake option is accepted but gates nothing); a `build-rocwmma` with `-DGGML_HIP_ROCWMMA_FATTN=ON` produced binaries perf-identical to the stock build on gfx1200 (d2048 f16: pp 635.9 vs 636.4, tg 21.41 vs 21.39; d8192 q4_0 17.35 vs 17.40; d4096 f16 20.49 vs 20.53). The HIP FA path in this build is the generic tile implementation; rocWMMA FA is not wired up in b12374. Do not chase this flag on this source drop.
+- **MTP (NextN) is mainstream mainline now** (e.g. GLM-DSA/GLM-5.2 via `--spec-type draft-mtp`). The app already exploits MTP for Qwen (2.2x). **Nanbeige4.3-33B has no MTP/NextN head — verified 2026-11-20** via `ggufmeta.py` on IQ2_XXS, IQ3_XXS and IQ4_XS-pure: `general.architecture = llama`, `block_count = 52`, no `nextn_predict_layers` / NextN tensor keys anywhere. Do not attempt `--spec-type draft-mtp` on this model. The only Nanbeige draft is DFlash2 (`dflash` arch, SGLang-only, measured on Modal RTX PRO 6000 in the vendor harness at 1.1-2.7x; requires SGLang + custom draft runtime, not runnable under llama.cpp/ROCm) — not adoptable here.
+- **Research KV compression not in llama.cpp**: KIVI (2-bit, per-channel K / per-token V, ~2.6x peak-memory reduction at iso-quality on Llama-2/Falcon/Mistral) and the SnapKV / DuoAttention / PyramidKV line of work are fork/research territory. llama.cpp only offers symmetric per-tensor K/V types (f16..q4_0). Not adoptable without a custom runtime; revisit only if a maintained mainline path lands.
+- **KV quality at long depth remains unmeasured** (our perplexity evidence is 2K ctx only). q4_0 at 32K-128K on a coding task is the open question that still gates recommending q4_0 KV for maximum-context loads.
+
+## What changed in Raptor because of this (2026-11-20)
+
+- `raptor-runtime`: the recommender can now plan `--no-kv-offload` (KV cache in system RAM) when VRAM cannot fit the requested window at any quantization: `recommend_with_arch_and_floor(..., allow_ram_kv)` calls `plan_ram_kv`, which keeps as many layers on the GPU as fit (weights stay on the GPU whenever possible) and moves only the KV cache (or the KV cache plus the layers that do not fit) to RAM. It is chosen only when it reaches a strictly longer context than any VRAM plan (or no VRAM plan exists); otherwise the VRAM plan wins, unchanged. CPU backend never uses it.
+- New `allow_ram_kv` setting (default off, `Settings > Runtime`, checkbox + explicit warning). Rationale lines say exactly what was chosen and why ("VRAM-resident cache reaches only N tokens; keeping the KV cache in system RAM instead (--no-kv-offload) reaches M …").
+- 264 raptor-runtime + 241 raptor-llm unit tests pass; `tsc` clean; settings UI tests 38 pass. Hardware numbers in this entry are flag-level, not yet through the app toggle.
+
+## 2026-11-20 (late): quantized-KV "nondeterminism" root-caused; VRAM cliff; rocWMMA probe
+
+Measurement hygiene note: 2026-11-19's "nondeterministic q4_0 KV" was measured through llama-server on a GPU that was also serving the QAT training job and desktop compositor. All numbers below were taken on an idle GPU. **Rule going forward: no kernel-level conclusion may be drawn from a server log taken while another GPU consumer is active; use `llama-bench` with the GPU idle.**
+
+### Quantized-KV at depth is stable (IQ2_XXS, -ngl 99, FA on, idle GPU)
+
+| depth | KV (K/V) | pp512 (tok/s) | tg128 (tok/s) | notes |
+|---|---|---|---|---|
+| 2048 | f16/f16 | 636.4 | 21.4 | |
+| 2048 | q4_0/q4_0 | 635.5 | 20.7 | |
+| 4096 | f16/f16 | 577.3 ± 2.3 | 20.53 ± 0.01 | 3 reps |
+| 4096 | q4_0/q4_0 | 565–573 | 19.38–19.42 | 5 reps in 4 processes, ±0.05 |
+| 8192 | f16/f16 | 485.7 | 18.8 | |
+| 8192 | q4_0/q4_0 | 477.6 | 17.40 ± 0.00 | |
+| 8192 | q8_0/q8_0 | 479.6 | 18.58 | |
+| 8192 | f16/q4_0 | 483.3 | 18.2 | |
+| 8192 | q4_0/f16 | 481.8 | 18.3 | |
+| 8192 | q8_0/f16 | 481.0 | 18.15 | |
+
+q4_0/q8_0 KV costs ~5–8% decode vs f16 at every depth. No run showed the 1.15/1.26 collapse. f16 and q4_0 differ by ~1 t/s consistently.
+
+### Where the 2026-11-19 collapses actually came from
+
+Every 2026-11-19 log that shows ~1–9 t/s needed ≥14.3 GiB of VRAM (vs 16,158 MiB driver-reported free):
+
+| log | model bytes + ctx (MiB) | needed | tg/s |
+|---|---|---|---|
+| plain-baseline | 13,970 + 354 + 315 | 14,639 | 4.18 |
+| isol-f16-40 / isol-q8-40 | 13,970 + 1,248 + 288 | 15,506 | 4.55 / 4.55 |
+| maxlayers-43-q4 | 15,188 + 1,344 + 288 | 16,820 | 1.40 |
+| at65k-q4-33 (IQ3_XXS @65K) | 11,613 + 8,192 + 761 | 20,566 | 1.33 |
+| iq4xs-pure-plain | 16,176 + 1,664 + 97 | 17,936 | 8.78 |
+
+All of these ran while dwm was holding ~5.7 GiB dedicated (Task Manager). This is the Windows shared-memory cliff: once commit exceeds real VRAM, the driver pages KV/weights/activations to system memory and decode falls off a cliff. Quantization of KV is irrelevant to the mechanism — f16 and q8_0 collapsed identically. **The 4.18 t/s plain-baseline case matters: 14.6 GiB is only ~100 MiB over this app's 14.5 GiB budget (free − max(10%, 512 MiB)), so the margin between "recommended" and "cliff" is thin on this machine.** No code change made; the app's `probe_fit` second-guess is the existing safety net. Flagged for the maintainer: consider whether the desktop-reluctant reserve should be a user setting (e.g. "conservative fit for desktop GPUs") rather than silently trusting driver-reported free VRAM.
+
+Unresolved exception: kv-depth.log task 129 (IQ2_XXS, 16K ctx, only 10.25 GiB needed) ran task 0 at 19.8 t/s, then task 129 collapsed to 1.03 t/s and *recovered* to 6.3 t/s by the final tokens (tg_3s). Not reproducible on an idle GPU; consistent with external transient (compositor/driver/power), not with the model fit. Logged as unexplained, not as a product defect.
+
+### llama-bench state-restore artifact
+
+`-ctk f16 -ctv q4_0` inside one process printed `state_read_data: incompatible value rotation (0 instead of 64)` / `failed to restore kv cache` once each when mixed cache types ran in sequence. 0/10 recurrence across fresh processes and across f16/q4_0/q8_0 combos at d8192. Cause: llama-bench reuses a state slot across test cases; the rotation tag differs by V-cache type. Not a llama-server path (single cache config per server), not a correctness issue for serving.
+
+### rocWMMA flash attention: not present in b12374
+
+Built a throwaway `build-rocwmma` from the b12374 source with `-DGGML_HIP_ROCWMMA_FATTN=ON` (253 MiB; removed after verification). Findings: (a) the source tree contains **zero** occurrences of `ROCWMMA` outside the CMake cache line — the option gates nothing in this source drop; (b) measured d2048/d4096/d8192 × f16/q4_0 × pp/tg are all within noise of the stock patched build. The ggml FA tile kernels are what ships. Do not spend time on this flag; the experiment cost ~15 min. If rocWMMA FA ever lands upstream, revisit.
+
+### Nanbeige MTP/NextN verdict
+
+All local 33B GGUFs (IQ2_XXS, IQ3_XXS, IQ4_XS-pure) carry `general.architecture = llama`, `block_count = 52`, and no `nextn_*` keys. `--spec-type draft-mtp` cannot work; only the external SGLang DFlash2 draft exists (not llama.cpp-compatible). Decode speed for this model family on this machine remains bounded by memory bandwidth; speculation via llama.cpp would need an n-gram/self-speculative path (already used successfully for whole-file rewrite tasks) or the 3B Nanbeige-3B draft via `--model-draft` with `draft-simple`/`draft-eagle`-style flow — untested, and Nanbeige-3B as draft for a 4.3 33B target is plausible but must be measured before any recommendation changes.
+
+### Status vs 2026-11-19
+
+The "quantized-KV nondeterminism" entry is closed as **not a defect**: stable ±0.05 t/s across processes, consistent across f16/q4_0/q8_0 and depths to 8K. RAM-KV remains opt-in for the does-not-fit-in-VRAM case; q4_0-KV-in-VRAM remains the default large-window answer on this card.
+
+## Open leads (logged, not yet tested — do not claim without measurement)
+
+- `--cache-reuse <N>` (KV-prefix reuse across requests) and `--cache-ram` (PR #16391, in b12374) for repeated long-prefix chats; needs a scripted two-turn replay harness against llama-server to quantify prefill savings. Would directly serve the 122,880-token default chat target.
+- `-ctxcp` / checkpoint-style KV offload for mid-conversation forks; behavior and interaction with `-nkvo` unknown on this build.
+- `--kv-unified` : reduces per-slot KV waste with `-np > 1`; decode perf impact unmeasured on gfx1200; we default to 2 slots.
+- Prompt-lookup / n-gram speculative decoding beyond simple cases — measured 187 t/s on whole-file rewrite tasks already (see DFlash2 notes); coverage is task-shaped, not general.
+- Raising the app VRAM reserve for desktop GPUs (see the oversubscription cliff above) — needs a product decision, not just a number; affects every recommendation the app emits.
+- b12430 runtime (MoE HIP prefill fix): needs `llama-bench -p 512 -fa 1` on Ornith before any adoption; our models are dense/MoE-off-GPU in the common case, so expected gain is nil for this machine's main model.
+- Per-token cost of `-ctk q8_0` vs `q4_0` at 32K+ depth on Ornith (measured only at 8K on this dense 33B; KV-heavy models may differ).
+- Windows-only: whether `--mlock` for the KV/weights changes spill behavior near the CLI reports; we have no positive evidence either way.

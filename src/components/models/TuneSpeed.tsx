@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Gauge } from "lucide-react";
+import { Gauge, PartyPopper } from "lucide-react";
 import { api, type ModelEntry, type TuneReport, type SavedTuning } from "../../api";
 import { engineStore, loadModel } from "../../state/engine";
 import { chatStore } from "../../state/chat";
@@ -8,6 +8,7 @@ import { useStore } from "../../hooks/useStore";
 import { messageOf } from "../../lib/errors";
 import { ConfirmDialog } from "../ConfirmDialog";
 import { Notice } from "../Notice";
+import { OptimizationRun } from "./OptimizationRun";
 import { formatTps } from "./LoadReport";
 
 export function tuneSummary(r: TuneReport): string {
@@ -23,7 +24,6 @@ export function tuneSummary(r: TuneReport): string {
 
 export function TuneSpeed({ entry, disabled, onRunningChange, prominent = false }: { entry: ModelEntry; disabled: boolean; onRunningChange?: (running: boolean) => void; prominent?: boolean }) {
   const running = useStore(tuningStore, (s) => s.activeId === entry.id);
-  const startedAt = useStore(tuningStore, (s) => s.startedAt);
   const pending = useStore(chatStore, (s) => s.pending);
   const report = useStore(tuningStore, (s) => s.reports[entry.id] ?? null);
   const setReport = (next: TuneReport | null) => tuningStore.set((s) => ({ reports: { ...s.reports, [entry.id]: next } }));
@@ -40,29 +40,7 @@ export function TuneSpeed({ entry, disabled, onRunningChange, prominent = false 
   }, [entry.id, running]);
   const [asking, setAsking] = useState(false);
   const [deep, setDeep] = useState(false);
-  const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
   const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (!running) {
-      setProgress(null);
-      return;
-    }
-    let current = true;
-    const timer = setInterval(() => {
-      api.models.tuneProgress().then(
-        (p) => {
-          if (current) setProgress(p);
-        },
-        () => undefined,
-      );
-    }, 1000);
-    return () => {
-      current = false;
-      clearInterval(timer);
-    };
-  }, [running]);
-
   async function start() {
     if (engineStore.get().busy !== null || chatStore.get().pending !== null) return;
     setAsking(false);
@@ -118,19 +96,7 @@ export function TuneSpeed({ entry, disabled, onRunningChange, prominent = false 
       >
         <Gauge size={13} aria-hidden="true" /> {running ? "Tuning..." : "Optimize speed"}
       </button>
-      {running && (
-        <div role="status" className="install-progress">
-          <progress
-            aria-label="Tuning progress"
-            max={progress && progress.total > 0 ? progress.total : undefined}
-            value={progress && progress.total > 0 ? progress.done : undefined}
-          />
-          <p className="small muted">
-            Testing{progress && progress.total > 0 ? ` setup ${Math.min(progress.done + 1, progress.total)} of ${progress.total}` : " the first setup"}{startedAt ? ` · ${Math.floor((Date.now() - startedAt) / 1000)} s elapsed` : ""}. This
-            may take a long time at full context. Keep the app open.
-          </p>
-        </div>
-      )}
+      {running && <OptimizationRun />}
       {error !== null && (
         <Notice tone="danger" title="Tuning failed">
           {error}
@@ -154,6 +120,20 @@ export function TuneSpeed({ entry, disabled, onRunningChange, prominent = false 
         </div>
       )}
       {savedError && <p role="status" className="small muted">Saved speed settings could not be read. Reopen this page to try again.</p>}
+      {report !== null && report.saved && report.confirmation.length >= 3 && (
+        <div className="tune-win" role="status">
+          <PartyPopper size={18} aria-hidden="true" />
+          <div>
+            <strong>
+              Faster, and proven: {Math.min(...report.confirmation.map(([base, candidate]) => base / candidate)).toFixed(2)}× on full-window requests
+            </strong>
+            <p className="small">
+              Verified across {report.confirmation.length} independent matched runs at {report.context_size.toLocaleString("en-US")} tokens.
+              The saved settings apply automatically to compatible loads of this model.
+            </p>
+          </div>
+        </div>
+      )}
       {report !== null && (
         <div className="tune-report">
           <p className="small">{tuneSummary(report)}</p>

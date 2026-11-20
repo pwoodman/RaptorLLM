@@ -53,6 +53,8 @@ pub struct SettingsView {
     pub embedding_model: Option<String>,
     /// Whether a load may fall back to CPU when a GPU backend has no device. Off by default.
     pub allow_cpu_fallback: bool,
+    /// Whether a load may keep the KV cache in system RAM when no VRAM plan fits. Off by default.
+    pub allow_ram_kv: bool,
     /// Parallel request slots for llama-server (1-8). See `Settings::parallel_slots`.
     pub parallel_slots: u32,
     /// Default thinking effort for thinking models. See `Settings::thinking_effort`.
@@ -100,6 +102,7 @@ fn view(state: &AppState) -> Result<SettingsView> {
         pinned_runtime: s.pinned_runtime.clone(),
         embedding_model: s.embedding_model.clone(),
         allow_cpu_fallback: s.allow_cpu_fallback,
+        allow_ram_kv: s.allow_ram_kv,
         parallel_slots: s.parallel_slots,
         thinking_effort: s.thinking_effort,
         notes,
@@ -131,6 +134,21 @@ pub async fn settings_set_allow_cpu_fallback(
 ) -> Result<SettingsView> {
     state.settings.update(|s| {
         s.allow_cpu_fallback = enabled;
+        Ok(())
+    })?;
+    view(&state)
+}
+
+/// Allows (or forbids) keeping the KV cache in system RAM when no VRAM plan exists
+/// (`--no-kv-offload`). Off by default. Generation is slower across the bus; only a
+/// load that would otherwise not start at all uses it.
+#[tauri::command]
+pub async fn settings_set_allow_ram_kv(
+    state: State<'_, AppState>,
+    enabled: bool,
+) -> Result<SettingsView> {
+    state.settings.update(|s| {
+        s.allow_ram_kv = enabled;
         Ok(())
     })?;
     view(&state)

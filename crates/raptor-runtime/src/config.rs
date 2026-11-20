@@ -150,6 +150,12 @@ pub struct LaunchConfig {
     /// Threads for prompt processing (`-tb`). None leaves it equal to `threads`.
     #[serde(default)]
     pub threads_batch: Option<u32>,
+    /// Keep the KV cache in system RAM instead of VRAM (`--no-kv-offload`). For windows
+    /// that do not fit in VRAM at all: generation is slower (the GPU reads KV over the
+    /// bus on every token), but windows that could not load at all become usable. Only
+    /// set when the user opted in (`allow_ram_kv`) or asked for it explicitly.
+    #[serde(default)]
+    pub kv_offload: bool,
     /// Passed through the environment (`LLAMA_API_KEY`), never on the command line.
     #[serde(skip)]
     api_key: Option<Secret>,
@@ -194,6 +200,7 @@ impl LaunchConfig {
                 draft_model: None,
                 parallel_slots: None,
                 threads_batch: None,
+                kv_offload: false,
                 api_key: None,
             },
         }
@@ -309,6 +316,10 @@ impl LaunchConfig {
             let at = args.len() - 2;
             args.splice(at..at, ["-tb".to_string(), n.to_string()]);
         }
+        if self.kv_offload {
+            let at = args.len() - 2;
+            args.insert(at, "--no-kv-offload".into());
+        }
         // Speculative decoding is not combined with the embeddings mode.
         if let (Some(mode), false) = (self.speculative, self.embeddings) {
             let at = args.len() - 2;
@@ -421,6 +432,12 @@ impl LaunchConfigBuilder {
     /// Threads for prompt processing (`-tb`).
     pub fn threads_batch(mut self, n: u32) -> Self {
         self.cfg.threads_batch = Some(n);
+        self
+    }
+    /// Keeps the KV cache in system RAM (`--no-kv-offload`). Only for contexts that do
+    /// not fit in VRAM; generation is much slower across the bus.
+    pub fn kv_offload(mut self, on: bool) -> Self {
+        self.cfg.kv_offload = on;
         self
     }
     /// Speculative decoding mode. Off by default.
@@ -711,10 +728,73 @@ pub fn recommend_with_arch(
     backend: Backend,
     fit: Option<&FitProjection>,
 ) -> Result<Recommendation> {
-    recommend_with_arch_and_floor(hw, model, arch, ctx_target, 0, backend, fit)
+    recommend_with_arch_and_floor(hw, model, arch, ctx_target, 0, backend, fit, false)
+}
+
+/// The largest plan `k` of `n` layers on the GPU inside `vram_budget`, with the
+/// KV cache in RAM (so it does not count against VRAM). `None` when not even one
+/// layer fits (compute alone exceeds the budget, or nothing fits at all).
+fn max_gpu_layers(weights: u64, recurrent: u64, compute: u64, n: u64, vram_budget: u64) -> Option<u64> {
+    let fixed = |k: u64| compute + (k * (weights + recurrent)).div_ceil(n);
+    if fixed(1) > vram_budget {
+        return None;
+    }
+    Some((1..=n).rev().find(|&k| fixed(k) <= vram_budget).unwrap_or(1))
+}
+
+/// Plans a launch with the KV cache in system RAM (`--no-kv-offload`), for when VRAM
+/// cannot hold one. VRAM holds as many layers as fit plus the compute buffer; RAM holds
+/// the whole KV cache. Returns (cache type, layers on the GPU, context). Candidates are
+/// tried in preference order (f16, then q8_0, then q4_0); a candidate that reaches `cap`
+/// wins, otherwise the largest context at or above `floor` wins.
+#[allow(clippy::too_many_arguments)]
+fn plan_ram_kv(
+    model: &ModelMeta,
+    kv_layer_count: u64,
+    n_layers: u64,
+    weights: u64,
+    recurrent: u64,
+    compute: u64,
+    vram_budget: u64,
+    ram_budget: u64,
+    kv_candidates: &[KvCacheType],
+    cap: u64,
+    floor: u64,
+) -> Option<(KvCacheType, u32, u32)> {
+    let gpu_layers = max_gpu_layers(weights, recurrent, compute, n_layers, vram_budget)?;
+    let layers_off = n_layers - gpu_layers;
+    let ram_off = (layers_off * (weights + recurrent)).div_ceil(n_layers);
+    let ram_for_kv = ram_budget.checked_sub(ram_off)?;
+    let kv_layers = kv_layer_count.max(1);
+    let mut best: Option<(KvCacheType, u64)> = None;
+    for &kv in kv_candidates {
+        let per_token = kv_layers * kv_bytes_per_token_per_layer(model, kv);
+        if per_token == 0 {
+            continue;
+        }
+        let max_ctx = ram_for_kv / per_token;
+        if max_ctx >= cap {
+            return Some((kv, gpu_layers as u32, cap as u32));
+        }
+        let ctx = round_down_step(max_ctx);
+        let better = match &best {
+            Some((_, best_ctx)) => ctx > *best_ctx,
+            None => true,
+        };
+        if better {
+            best = Some((kv, ctx));
+        }
+    }
+    let (kv, ctx) = best?;
+    (ctx >= floor).then_some((kv, gpu_layers as u32, ctx as u32))
 }
 
 /// Recommends a configuration that can hold at least `minimum` tokens.
+///
+/// With `allow_ram_kv`, and only when no VRAM plan exists, a configuration with
+/// the KV cache in system RAM (`--no-kv-offload`) is returned instead of an error.
+/// Generation is slower across the bus, so this is opt-in.
+#[allow(clippy::too_many_arguments)] // backend + fit were the 7th/8th; grouped options would churn every caller
 pub fn recommend_with_arch_and_floor(
     hw: &HardwareInfo,
     model: &ModelMeta,
@@ -723,6 +803,7 @@ pub fn recommend_with_arch_and_floor(
     minimum: u32,
     backend: Backend,
     fit: Option<&FitProjection>,
+    allow_ram_kv: bool,
 ) -> Result<Recommendation> {
     let ctx_target = ctx_target.max(minimum);
     validate_model(model, ctx_target)?;
@@ -781,7 +862,7 @@ pub fn recommend_with_arch_and_floor(
         let ctx = ctx as u32;
         let kv_bytes = u64::from(ctx) * all_kv_per_token;
         let ram_bytes = model.size_bytes + arch.recurrent_bytes + kv_bytes;
-        let config = build_config(backend, 0, ctx, threads, false, kv)?;
+        let config = build_config(backend, 0, ctx, threads, false, kv, false)?;
         rationale.push(format!("threads set to {threads} physical cores"));
         return Ok(Recommendation {
             config,
@@ -901,11 +982,42 @@ pub fn recommend_with_arch_and_floor(
         .iter()
         .filter_map(|(_, p)| p.map(|(layers, _)| layers))
         .max();
-    let chosen = plans
+    let vram_plan = plans
         .iter()
         .find(|(_, p)| p.map(|(layers, _)| layers) == most_layers && p.is_some())
-        .copied();
-    if let Some((kv, Some((layers, ctx)))) = chosen {
+        .copied()
+        .map(|(kv, p)| {
+            let (layers, ctx) = p.expect("filtered above");
+            (kv, layers, ctx)
+        });
+    let vram_ctx = vram_plan.as_ref().map(|(_, _, ctx)| *ctx);
+    // With the RAM-KV opt-in, the RAM plan wins whenever it reaches a longer
+    // context than the VRAM plan. Generation is slower across the bus, but the
+    // user accepted that trade for the context they asked for.
+    let ram_plan = if allow_ram_kv {
+        plan_ram_kv(
+            model,
+            u64::from(arch.kv_layers),
+            n,
+            weights,
+            recurrent,
+            compute,
+            vram_budget,
+            ram_budget,
+            &kv_candidates,
+            u64::from(cap),
+            floor,
+        )
+    } else {
+        None
+    };
+    let prefer_ram = match (&vram_plan, &ram_plan) {
+        (Some((_, _, vctx)), Some((_, _, rctx))) => rctx > vctx,
+        (None, Some(_)) => true,
+        _ => false,
+    };
+    let vram_plan = if prefer_ram { None } else { vram_plan };
+    if let Some((kv, layers, ctx)) = vram_plan {
         let costs = costs_for(kv);
         if kv != KvCacheType::F16 {
             let f16_layers = plans[0].1.map(|(l, _)| l);
@@ -943,7 +1055,7 @@ pub fn recommend_with_arch_and_floor(
         let vram_bytes = costs.vram(layers_u, ctx_u);
         let ram_bytes = costs.ram(layers_u, ctx_u);
         let kv_bytes = costs.kv_per_token * ctx_u;
-        let config = build_config(backend, layers, ctx, threads, true, kv)?;
+        let config = build_config(backend, layers, ctx, threads, true, kv, false)?;
         return Ok(Recommendation {
             config,
             rationale,
@@ -957,13 +1069,87 @@ pub fn recommend_with_arch_and_floor(
         });
     }
 
-    Err(RaptorError::Runtime(format!(
-        "no GPU layers fit in the {} MiB VRAM budget at a context of at least {} tokens. \
-         Choose a smaller quantization, or select the CPU runtime explicitly. \
-         Raptor LLM will not fall back to CPU silently.",
-        vram_budget / MIB,
-        floor
-    )))
+    if let Some((kv, layers, ctx)) = ram_plan {
+        // The opt-in: keep the weights on the GPU and the KV cache in system RAM
+        // (`--no-kv-offload`). Generation is slower across the bus, so this needs it.
+        {
+                let layers_u = u64::from(layers);
+                let per_token =
+                    u64::from(arch.kv_layers) * kv_bytes_per_token_per_layer(model, kv);
+                let kv_bytes = per_token * u64::from(ctx);
+                let vram_bytes = compute + (layers_u * (weights + recurrent)).div_ceil(n);
+                let ram_off = ((n - layers_u) * (weights + recurrent)).div_ceil(n);
+                let ram_bytes = ram_off + kv_bytes;
+                match vram_ctx {
+                    Some(vctx) => rationale.push(format!(
+                        "a VRAM-resident KV cache reaches only {vctx} tokens; keeping the KV \
+                         cache in system RAM instead (--no-kv-offload) reaches {ctx}, at \
+                         lower generation speed"
+                    )),
+                    None => rationale.push(format!(
+                        "no VRAM plan fits the {vram_budget} MiB budget; keeping the KV cache in \
+                         system RAM instead (--no-kv-offload)"
+                    )),
+                }
+                if layers_u == n {
+                    rationale.push(format!(
+                        "all {n} layers on the GPU; only the KV cache moved to system RAM"
+                    ));
+                } else {
+                    rationale.push(format!(
+                        "{layers} of {n} layers on the GPU; the rest and the KV cache are in \
+                         system RAM (much slower)"
+                    ));
+                }
+                rationale.push(format!(
+                    "KV cache in RAM: {} at {ctx} tokens ({} GiB); the GPU reads it over the \
+                     bus on every token, so generation is slower than a VRAM-resident cache",
+                    kv.llama_arg(),
+                    kv_bytes / GIB
+                ));
+                if u64::from(ctx) < u64::from(cap) {
+                    rationale.push(format!(
+                        "context reduced from {cap} to {ctx}: the KV cache does not fit in \
+                         system RAM at {cap}"
+                    ));
+                }
+                rationale.push("flash attention on: supported by the GPU backend".into());
+                rationale.push(format!("threads set to {threads} physical cores"));
+                let config = build_config(backend, layers, ctx, threads, true, kv, true)?;
+                return Ok(Recommendation {
+                    config,
+                    rationale,
+                    estimate: MemoryEstimate {
+                        vram_bytes,
+                        ram_bytes,
+                        kv_bytes,
+                        vram_budget,
+                        ram_budget,
+                    },
+                });
+        }
+    } else if allow_ram_kv {
+        rationale.push(
+            "system RAM could not hold the KV cache at the needed context either".to_string(),
+        );
+    }
+
+    Err(RaptorError::Runtime(if allow_ram_kv {
+        format!(
+            "no GPU layers fit in the {} MiB VRAM budget and system RAM is not enough \
+             for a {floor}-token KV cache at this size. Choose a smaller quantization or \
+             the CPU runtime explicitly. Raptor LLM will not fall back to CPU silently.",
+            vram_budget / MIB
+        )
+    } else {
+        format!(
+            "no GPU layers fit in the {} MiB VRAM budget at a context of at least {floor} tokens. \
+             Choose a smaller quantization, select the CPU runtime explicitly, or allow the KV \
+             cache in system RAM in the settings (slower). Raptor LLM will not fall back to \
+             CPU silently.",
+            vram_budget / MIB
+        )
+    }))
 }
 
 /// Assembles a recommended config. The model path stays empty until
@@ -975,6 +1161,7 @@ fn build_config(
     threads: u32,
     flash: bool,
     kv: KvCacheType,
+    kv_offload: bool,
 ) -> Result<LaunchConfig> {
     let batch = BATCH_MAX.min(ctx);
     let cfg = LaunchConfig {
@@ -996,6 +1183,7 @@ fn build_config(
         draft_model: None,
         parallel_slots: None,
         threads_batch: None,
+        kv_offload,
         api_key: None,
     };
     let mut probe = cfg.clone();
@@ -1075,6 +1263,7 @@ mod tests {
             LONG_CHAT_CONTEXT,
             Backend::Hip,
             None,
+            false,
         )
         .unwrap();
         let mut config = recommendation.config;
@@ -1358,6 +1547,90 @@ mod tests {
         assert!(
             matches!(err, RaptorError::Runtime(m) if m.contains("Raptor LLM will not fall back to CPU"))
         );
+    }
+
+    #[test]
+    fn ram_kv_opt_in_reaches_the_cap_when_vram_cannot() {
+        // 8 GiB of weights, 40 layers, KV far too big for 16 GiB at the trained window.
+        let model = ModelMeta {
+            n_ctx_train: 262_144,
+            ..model_8b()
+        };
+        let req = 262_144;
+        // Opt-in off: the VRAM plan shrinks the context.
+        let off = recommend_with_arch(
+            &hw_rx9060(None),
+            &model,
+            &ModelArch::dense(&model),
+            req,
+            Backend::Hip,
+            None,
+        )
+        .unwrap();
+        assert!(off.config.ctx_size < req, "VRAM-only plan must shrink the context");
+        assert!(!off.config.kv_offload);
+        // Opt-in on: the KV cache moves to system RAM and the requested window is kept.
+        let on = recommend_with_arch_and_floor(
+            &hw_rx9060(None),
+            &model,
+            &ModelArch::dense(&model),
+            req,
+            0,
+            Backend::Hip,
+            None,
+            true,
+        )
+        .unwrap();
+        assert_eq!(on.config.ctx_size, req);
+        assert!(on.config.kv_offload, "expected --no-kv-offload");
+        assert_eq!(on.config.gpu_layers, 40, "weights stay on the GPU");
+        assert!(on.config.args().iter().any(|a| a == "--no-kv-offload"));
+        assert!(on
+            .rationale
+            .iter()
+            .any(|r| r.contains("--no-kv-offload") && r.contains("system RAM")));
+        assert!(on.estimate.ram_bytes > on.estimate.vram_bytes);
+    }
+
+    #[test]
+    fn ram_kv_opt_in_keeps_vram_plan_when_it_reaches_the_cap() {
+        // Small model, modest window: a VRAM plan exists, so RAM is never touched.
+        let on = recommend_with_arch_and_floor(
+            &hw_rx9060(None),
+            &model_8b(),
+            &ModelArch::dense(&model_8b()),
+            8192,
+            0,
+            Backend::Hip,
+            None,
+            true,
+        )
+        .unwrap();
+        assert!(!on.config.kv_offload);
+        assert!(!on.config.args().iter().any(|a| a == "--no-kv-offload"));
+    }
+
+    #[test]
+    fn ram_kv_opt_in_still_errors_when_ram_cannot_hold_the_cache() {
+        let model = ModelMeta {
+            size_bytes: 20 * GIB,
+            ..model_8b()
+        };
+        let mut hw = hw_with_vram(4 * GIB, 3 * GIB);
+        hw.ram_total = 8 * GIB;
+        hw.ram_avail = 4 * GIB;
+        let err = recommend_with_arch_and_floor(
+            &hw,
+            &model,
+            &ModelArch::dense(&model),
+            8192,
+            0,
+            Backend::Hip,
+            None,
+            true,
+        )
+        .unwrap_err();
+        assert!(matches!(err, RaptorError::Runtime(_)));
     }
 
     #[test]

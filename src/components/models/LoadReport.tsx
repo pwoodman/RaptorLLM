@@ -165,7 +165,7 @@ export function formatTps(tps: number): string {
   return Number.isFinite(tps) ? `${tps.toFixed(1)} tok/s` : "Unknown";
 }
 
-function recordedLabel(recorded: BenchmarkOutcome["recorded"]): string {
+export function recordedLabel(recorded: BenchmarkOutcome["recorded"]): string {
   switch (recorded) {
     case "inserted":
       return "saved as a new record";

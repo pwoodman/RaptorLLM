@@ -121,6 +121,10 @@ pub struct Settings {
     /// Lets a load continue on CPU when a GPU backend has no device. Off by default. A load
     /// that does fall back says so in its result (`cpu_fallback`).
     pub allow_cpu_fallback: bool,
+    /// Lets a load keep the KV cache in system RAM (`--no-kv-offload`) when no
+    /// VRAM plan fits. Off by default. Generation is slower across the bus; the
+    /// recommendation says so when it happens.
+    pub allow_ram_kv: bool,
     /// Folders the user scanned for models, offered again in the chat window and Models page.
     pub model_folders: Vec<PathBuf>,
     /// Requests llama-server works on at once (`-np`). Each slot keeps its own recurrent state and
@@ -157,6 +161,7 @@ impl Default for Settings {
             pinned_runtime: None,
             embedding_model: None,
             allow_cpu_fallback: false,
+            allow_ram_kv: false,
             model_folders: Vec::new(),
             parallel_slots: DEFAULT_PARALLEL_SLOTS,
             backend_prefs: Default::default(),
@@ -731,6 +736,7 @@ mod embedding_and_fallback_tests {
         let s = Settings::default();
         assert!(s.embedding_model.is_none());
         assert!(!s.allow_cpu_fallback, "CPU fallback is never on by default");
+        assert!(!s.allow_ram_kv, "KV in RAM is never on by default");
         assert_eq!(s.parallel_slots, DEFAULT_PARALLEL_SLOTS);
         for bad in [0, 9] {
             let t = Settings {

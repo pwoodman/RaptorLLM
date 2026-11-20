@@ -10,6 +10,7 @@ import { Panel } from "../Panel";
 import { ErrorState, LoadingState } from "../AsyncState";
 import { InstallRuntime } from "../setup/InstallRuntime";
 import { CpuFallbackToggle } from "./CpuFallbackToggle";
+import { RamKvToggle } from "./RamKvToggle";
 import { ParallelSlots } from "./ParallelSlots";
 import { ThinkingDefault } from "./ThinkingDefault";
 
@@ -105,6 +106,7 @@ export function RuntimePanel() {
       )}
 
       <CpuFallbackToggle />
+      <RamKvToggle />
 
       <ParallelSlots />
 

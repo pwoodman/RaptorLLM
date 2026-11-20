@@ -982,6 +982,9 @@ impl AppState {
     ) -> Result<Recommendation> {
         let meta = model_meta(entry)?;
         let floor = self.chat_context_floor(entry);
+        // Opt-in: allow the KV cache to live in system RAM (--no-kv-offload) when nothing
+        // fits in VRAM. Off by default; the only path to it is the settings toggle.
+        let allow_ram_kv = self.settings.snapshot().allow_ram_kv;
         let (arch, mut facts) = model_arch(entry, &meta);
         let arch = ModelArch {
             extra_device_bytes,
@@ -989,7 +992,7 @@ impl AppState {
         };
         let mut rec = self
             .runtime
-            .recommend_config_with_floor(&meta, &arch, ctx, floor, None)?;
+            .recommend_config_with_floor(&meta, &arch, ctx, floor, None, allow_ram_kv)?;
         let gpu = self
             .runtime
             .status()
@@ -1008,6 +1011,7 @@ impl AppState {
                         ctx,
                         floor,
                         Some(&projection),
+                        allow_ram_kv,
                     )?;
                 }
                 Err(e) => facts.push(format!(

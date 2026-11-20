@@ -438,10 +438,13 @@ impl RuntimeEngine {
         ctx_target: u32,
         projection: Option<&FitProjection>,
     ) -> Result<Recommendation> {
-        self.recommend_config_with_floor(model, arch, ctx_target, 0, projection)
+        self.recommend_config_with_floor(model, arch, ctx_target, 0, projection, false)
     }
 
     /// Like `recommend_config_with_arch`, with a context floor the planner must retain.
+    /// `allow_ram_kv` lets a configuration with the KV cache in system RAM
+    /// (`--no-kv-offload`) be returned when nothing fits in VRAM. Generation is much
+    /// slower across the bus, so this is opt-in.
     pub fn recommend_config_with_floor(
         &self,
         model: &ModelMeta,
@@ -449,6 +452,7 @@ impl RuntimeEngine {
         ctx_target: u32,
         minimum: u32,
         projection: Option<&FitProjection>,
+        allow_ram_kv: bool,
     ) -> Result<Recommendation> {
         let state = lock(&self.state);
         let hw = state.hardware.as_ref().ok_or_else(|| {
@@ -465,6 +469,7 @@ impl RuntimeEngine {
             minimum,
             active.backend,
             projection,
+            allow_ram_kv,
         )
     }
 
