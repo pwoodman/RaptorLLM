@@ -706,3 +706,41 @@ The "quantized-KV nondeterminism" entry is closed as **not a defect**: stable ±
 - b12430 runtime (MoE HIP prefill fix): needs `llama-bench -p 512 -fa 1` on Ornith before any adoption; our models are dense/MoE-off-GPU in the common case, so expected gain is nil for this machine's main model.
 - Per-token cost of `-ctk q8_0` vs `q4_0` at 32K+ depth on Ornith (measured only at 8K on this dense 33B; KV-heavy models may differ).
 - Windows-only: whether `--mlock` for the KV/weights changes spill behavior near the CLI reports; we have no positive evidence either way.
+
+## Research notes (web, Sept-Nov 2026, reviewed 2026-11-20; leads, not measurements)
+
+Goal behind this pass: tune faster, and reach >= 1.5x tok/s over an untuned llama-server on this card. Nothing below was run here.
+
+- **Speculative speed on AMD is limited by the small-batch verify kernels, not by draft quality.** llama.cpp v1.0.0 (= b12359, 2026-11-13; our b12374 already includes it) moved MTP on a 27B from +11-17% to +52-55% (RTX 3090, homebrewserver.club, acceptance unchanged at 32-33%), and the gain came from a new CUDA kernel for 2-24-token batches (PR #31533) that is **NVIDIA-only**. Our own `GGML_MMVQ_MAX` patch hits the same bottleneck on HIP. Lead: measure verify cost directly with `llama-bench -ub 2..8` (or `--spec-synth-rates`) per backend before and after any runtime bump.
+- **Vulkan PR #31804 (RDNA4 + AMD proprietary driver, MMVQ rows for Q3_K / Q5_K / IQ4_XS at batch 5-8)**: open, "merge ready" 2026-11-20. R9700 / Windows / Adrenalin 26.9.2: op-level IQ4_XS 1.28x (n=5) / 1.41x (n=8); Qwen3.8-27B UD-Q4_K_XL pp128 at ub 6/7/8 1.45x / 1.38x / 1.58x, tg128 unchanged. Batch 5-8 is the speculative-verify shape, and Nanbeige IQ4_XS-pure is an IQ4_XS file. UNTESTED: Vulkan + DFlash/n-gram/MTP on a build that has it.
+- **`--spec-draft-n-max` was never set by the app** (default 3; now 2 for MTP, see the draft-length section below). The v1.0 MTP numbers above used 6; DFlash docs use 15, DFlash2/DSpark 7. UNTESTED: draft length 2/3/4/6 as an autotune dimension for MTP models (Qwen3.8-27B). Cheapest lead on this list.
+- **stew675/llama-cpp-rdna-boosts** (MIT, active, last commit 2026-11-20, fork point 4f9dfa0e3, Windows supported): opt-in adaptive MTP draft depth (`--spec-type draft-mtp-adaptive`), MTP draft-vocab subset (`--spec-draft-mtp-vocab N`), K-quant/IQ4_XS WMMA verify matvec (`--wmma-verify`), q4_0 K/V fold (+10.8% tg128 on a q4_0-KV 30B-A3B, GPU not named), BF16 KV + native-BF16 FA. Most headline numbers are 2-3 GPU tensor-split and self-reported. Its Windows note matters to us: `amdhip64_7.dll` is usually loaded from `C:\Windows\System32` (the Adrenalin driver's copy) rather than the copy beside the exe, and that changed pinned-memory limits and prefill (370.7 vs 39.8 t/s on the author's box). UNTESTED here: whether the unexplained ~22% single-token slowdown since 2026-11-14 matches a driver-side `amdhip64_7.dll` change; check which copy llama-server loads (Process Explorer / `listdlls`) and its version.
+- **Lemonade llamacpp-rocm b1383** (2026-11-21, ROCm 10.3.0a20261120 TheRock nightly, gfx120X Windows zip ~694 MB). b1375 already measured +22-26% dense prefill, tg identical. Re-test candidate, prefill only.
+- **Mainline drafter family grew** (docs/speculative.md): `draft-dflash2`, `draft-dspark` (Qwen3 backbone only), `draft-lilicorr`, `--spec-draft-p-min` confidence truncation, `--spec-draft-sampling probabilistic`. No tree verification. Nothing new for Nanbeige (DFlash2 already rejected at 6-14% acceptance).
+- **Tuning faster**: `--spec-synth-rates P0,P1,...` / `--spec-synth-len L` give a synthetic acceptance profile, so the cost of speculation can be benchmarked without prompts or drafts. llama-optimize (bigattichouse) screens many knobs with Morris/Taguchi designs instead of a grid. Both are leads for shortening the autotuner.
+- **Looked at, not useful here**: FreeToken on RX 9060 XT / Windows (issue #122, Aug 2026): dense decode 93.6 vs llama.cpp ROCm 89.9 but Vulkan 113.0; MoE 61 vs 83.5. Behind llama.cpp. Papers: D3D (arXiv 2611.06425, async diffusion drafting), layer-wise CPU-GPU scheduling (2611.01393, OPT-30B vs Accelerate/DeepSpeed baselines), KnapSpec (2602.20217, training-free layer-skip self-speculation, not in llama.cpp). llama.cpp v1.0 breaking change: `--defrag-thold`/`-dt` removed (the app does not pass it).
+
+## MTP draft length (`--spec-draft-n-max`) on Qwen3.8-27B (2026-11-20, RX 9060 XT, ROCm b12374-patched, `scripts/bench_spec.py`: `-np 1 -c 8192 -fa on -ctk/-ctv f16 -ub 512`, thinking off, temperature 0.6, seed 470, 256-token replies, 5 prompts x 2 reps, fresh server per arm; GPU idle, a CPU-only Python job was running alongside)
+
+| arm | code | rewrite | prose | chat | report | mean | vs none | accepted |
+|---|---|---|---|---|---|---|---|---|
+| none | 21.1/21.4 | 21.4/21.4 | 21.5/21.4 | 21.4/21.4 | 21.5/21.4 | 21.4 | 1.00x | - |
+| draft-mtp n2 | 33.5/33.0 | 39.9/39.6 | 29.0/28.9 | 33.0/33.3 | 31.9/32.0 | **33.4** | **1.56x** | 70% |
+| draft-mtp n3 (llama.cpp default, what the app runs) | 32.8/32.5 | 43.3/43.7 | 26.2/26.0 | 30.7/30.7 | 30.6/30.5 | 32.7 | 1.53x | 60% |
+| draft-mtp n4 | 28.9/31.2 | 46.5/46.5 | 21.4/21.2 | 26.0/25.7 | 28.3/28.0 | 30.4 | 1.42x | 49% |
+| draft-mtp n6 | 31.8/31.1 | 57.7/57.5 | 19.7/19.6 | 25.1/25.7 | 27.1/27.1 | 32.3 | 1.51x | 38% |
+| draft-mtp n8 | 25.9/30.1 | 58.4/58.4 | 16.3/17.8 | 20.1/23.4 | 20.4/26.5 | 29.7 | 1.39x | 31% |
+
+- **Longer MTP drafts only pay on copy-heavy text.** Rewrite climbs 39.8 -> 58.4 tok/s from n2 to n8, while prose falls 29.0 -> 16-18 (below no speculation at n8). Acceptance drops 70% -> 31% as the draft grows, and on this card each extra verified token is not cheap enough to carry the misses. Fits the research note above: the RTX 3090's +52-55% at n6 came from an NVIDIA-only small-batch kernel.
+- **n2 vs the default n3: +2% on the mean**, +11% prose, +8% chat, +4% report, +1.5% code, -8% rewrite. Small. Since the app stacks `ngram-simple` (which covers copied text), the decision depends on the stacked run below.
+- Repeats agree within ~1% except n8 (code 25.9/30.1, report 20.4/26.5), which is noisy.
+
+**Stacked with `ngram-simple` (what the app launches for MTP models), same harness, same day:**
+
+| arm | code | rewrite | prose | chat | report | mean | vs none | accepted |
+|---|---|---|---|---|---|---|---|---|
+| draft-mtp,ngram-simple n3 (current app) | 32.4/32.3 | 42.1/44.9 | 25.7/25.8 | 30.6/30.5 | 30.4/30.1 | 32.5 | 1.52x | 52% |
+| draft-mtp,ngram-simple **n2** | 33.0/33.2 | 52.7/53.2 | 28.7/28.8 | 33.0/33.0 | 32.0/31.9 | **36.0** | **1.68x** | 61% |
+
+- **WORKS (measured, applied 2026-11-20 as `MTP_DRAFT_N_MAX` in `raptor-runtime` config.rs; unit-tested, not yet re-measured through the app): `--spec-draft-n-max 2` with the stacked mode is +11% on the mean over the app's current launch and wins every prompt** (prose +12%, chat +8%, rewrite +21%, report +5%, code +2%). With n2 the stack also beats MTP alone at n2 (36.0 vs 33.4), mostly on rewrite (53 vs 40), so n-gram drafts complement short MTP drafts. At n3 the stack is no better than MTP alone (32.5 vs 32.7).
+- Caveats: one model (Qwen3.8-27B UD-IQ3_S), one card, ROCm only, 8K context, 256-token replies, thinking off. Not measured: Vulkan (its small-batch verify cost differs, see PR #31804), deep context, thinking on, other MTP models. The best length is likely backend- and model-specific, so it belongs in the autotuner rather than as a fixed constant.

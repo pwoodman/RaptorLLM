@@ -82,7 +82,8 @@ pub enum SpecMode {
     /// with prompt n-grams. Only for a model whose GGUF has `nextn_predict_layers` > 0, and the
     /// server refuses to start when the tensors are missing (measured on Ornith), so callers must
     /// be ready to retry without it. Measured on Qwen3.8-27B (b12374, six code-rewrite prompts):
-    /// `draft-mtp` alone 28-46 tok/s, stacked 186-213, and 25-29 -> 41-42 on new code.
+    /// `draft-mtp` alone 28-46 tok/s, stacked 186-213, and 25-29 -> 41-42 on new code. Drafts are
+    /// capped at [`MTP_DRAFT_N_MAX`] tokens.
     Mtp,
     /// `--spec-type draft-dflash,ngram-simple` with a separate DFlash block-diffusion draft model
     /// (`-md`, [`LaunchConfig::draft_model`]), stacked with prompt n-grams. Measured on
@@ -96,6 +97,12 @@ pub enum SpecMode {
 /// draft is less sure of than this. Measured: p_min 0.3 gave code 16.7 / story 13.1 tok/s vs
 /// 16.6 / 12.4 without it and 15.2 / 11.9 at 0.5.
 pub const DFLASH_P_MIN: &str = "0.3";
+
+/// `--spec-draft-n-max` used with [`SpecMode::Mtp`] (llama.cpp's default is 3). Measured on
+/// Qwen3.8-27B (b12374 ROCm, RX 9060 XT, five prompts x 2, temperature 0.6), stacked mode:
+/// 36.0 tok/s mean at 2 vs 32.5 at 3, faster on every prompt; longer drafts only help copied text
+/// (MTP alone: rewrite 40 -> 58 from 2 to 8, prose 29 -> 17, below the 21.4 of no speculation).
+pub const MTP_DRAFT_N_MAX: &str = "2";
 
 impl SpecMode {
     /// The value passed to `--spec-type`.
@@ -324,6 +331,16 @@ impl LaunchConfig {
         if let (Some(mode), false) = (self.speculative, self.embeddings) {
             let at = args.len() - 2;
             args.splice(at..at, ["--spec-type".to_string(), mode.arg().to_string()]);
+            if mode == SpecMode::Mtp {
+                let at = args.len() - 2;
+                args.splice(
+                    at..at,
+                    [
+                        "--spec-draft-n-max".to_string(),
+                        MTP_DRAFT_N_MAX.to_string(),
+                    ],
+                );
+            }
             if let (SpecMode::Dflash, Some(draft)) = (mode, &self.draft_model) {
                 let at = args.len() - 2;
                 args.splice(
@@ -2020,9 +2037,14 @@ mod hybrid_tests {
         let mtp = base().speculative(SpecMode::Mtp).build().unwrap().args();
         let at = mtp.iter().position(|a| a == "--spec-type").unwrap();
         assert_eq!(mtp[at + 1], "draft-mtp,ngram-simple");
+        assert_eq!(&mtp[at + 2..at + 4], ["--spec-draft-n-max", "2"]);
         assert_eq!(&mtp[mtp.len() - 2..], ["-lv", "4"]);
         let ngram = base().speculative(SpecMode::Ngram).build().unwrap().args();
         assert!(ngram.windows(2).any(|w| w == ["--spec-type", "ngram-mod"]));
+        assert!(
+            !ngram.iter().any(|a| a == "--spec-draft-n-max"),
+            "the draft length is only measured for MTP"
+        );
         let emb = base()
             .speculative(SpecMode::Mtp)
             .embeddings(true)
@@ -2031,8 +2053,8 @@ mod hybrid_tests {
             .args();
         assert!(!emb.iter().any(|a| a == "--spec-type"));
         let mut without = mtp.clone();
-        without.drain(at..at + 2);
-        assert_eq!(without, plain, "the flag is the only difference");
+        without.drain(at..at + 4);
+        assert_eq!(without, plain, "the two flags are the only difference");
     }
 
     #[test]
