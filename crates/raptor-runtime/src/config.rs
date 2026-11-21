@@ -751,12 +751,23 @@ pub fn recommend_with_arch(
 /// The largest plan `k` of `n` layers on the GPU inside `vram_budget`, with the
 /// KV cache in RAM (so it does not count against VRAM). `None` when not even one
 /// layer fits (compute alone exceeds the budget, or nothing fits at all).
-fn max_gpu_layers(weights: u64, recurrent: u64, compute: u64, n: u64, vram_budget: u64) -> Option<u64> {
+fn max_gpu_layers(
+    weights: u64,
+    recurrent: u64,
+    compute: u64,
+    n: u64,
+    vram_budget: u64,
+) -> Option<u64> {
     let fixed = |k: u64| compute + (k * (weights + recurrent)).div_ceil(n);
     if fixed(1) > vram_budget {
         return None;
     }
-    Some((1..=n).rev().find(|&k| fixed(k) <= vram_budget).unwrap_or(1))
+    Some(
+        (1..=n)
+            .rev()
+            .find(|&k| fixed(k) <= vram_budget)
+            .unwrap_or(1),
+    )
 }
 
 /// Plans a launch with the KV cache in system RAM (`--no-kv-offload`), for when VRAM
@@ -1090,60 +1101,59 @@ pub fn recommend_with_arch_and_floor(
         // The opt-in: keep the weights on the GPU and the KV cache in system RAM
         // (`--no-kv-offload`). Generation is slower across the bus, so this needs it.
         {
-                let layers_u = u64::from(layers);
-                let per_token =
-                    u64::from(arch.kv_layers) * kv_bytes_per_token_per_layer(model, kv);
-                let kv_bytes = per_token * u64::from(ctx);
-                let vram_bytes = compute + (layers_u * (weights + recurrent)).div_ceil(n);
-                let ram_off = ((n - layers_u) * (weights + recurrent)).div_ceil(n);
-                let ram_bytes = ram_off + kv_bytes;
-                match vram_ctx {
-                    Some(vctx) => rationale.push(format!(
-                        "a VRAM-resident KV cache reaches only {vctx} tokens; keeping the KV \
+            let layers_u = u64::from(layers);
+            let per_token = u64::from(arch.kv_layers) * kv_bytes_per_token_per_layer(model, kv);
+            let kv_bytes = per_token * u64::from(ctx);
+            let vram_bytes = compute + (layers_u * (weights + recurrent)).div_ceil(n);
+            let ram_off = ((n - layers_u) * (weights + recurrent)).div_ceil(n);
+            let ram_bytes = ram_off + kv_bytes;
+            match vram_ctx {
+                Some(vctx) => rationale.push(format!(
+                    "a VRAM-resident KV cache reaches only {vctx} tokens; keeping the KV \
                          cache in system RAM instead (--no-kv-offload) reaches {ctx}, at \
                          lower generation speed"
-                    )),
-                    None => rationale.push(format!(
-                        "no VRAM plan fits the {vram_budget} MiB budget; keeping the KV cache in \
+                )),
+                None => rationale.push(format!(
+                    "no VRAM plan fits the {vram_budget} MiB budget; keeping the KV cache in \
                          system RAM instead (--no-kv-offload)"
-                    )),
-                }
-                if layers_u == n {
-                    rationale.push(format!(
-                        "all {n} layers on the GPU; only the KV cache moved to system RAM"
-                    ));
-                } else {
-                    rationale.push(format!(
-                        "{layers} of {n} layers on the GPU; the rest and the KV cache are in \
-                         system RAM (much slower)"
-                    ));
-                }
+                )),
+            }
+            if layers_u == n {
                 rationale.push(format!(
-                    "KV cache in RAM: {} at {ctx} tokens ({} GiB); the GPU reads it over the \
-                     bus on every token, so generation is slower than a VRAM-resident cache",
-                    kv.llama_arg(),
-                    kv_bytes / GIB
+                    "all {n} layers on the GPU; only the KV cache moved to system RAM"
                 ));
-                if u64::from(ctx) < u64::from(cap) {
-                    rationale.push(format!(
-                        "context reduced from {cap} to {ctx}: the KV cache does not fit in \
+            } else {
+                rationale.push(format!(
+                    "{layers} of {n} layers on the GPU; the rest and the KV cache are in \
+                         system RAM (much slower)"
+                ));
+            }
+            rationale.push(format!(
+                "KV cache in RAM: {} at {ctx} tokens ({} GiB); the GPU reads it over the \
+                     bus on every token, so generation is slower than a VRAM-resident cache",
+                kv.llama_arg(),
+                kv_bytes / GIB
+            ));
+            if u64::from(ctx) < u64::from(cap) {
+                rationale.push(format!(
+                    "context reduced from {cap} to {ctx}: the KV cache does not fit in \
                          system RAM at {cap}"
-                    ));
-                }
-                rationale.push("flash attention on: supported by the GPU backend".into());
-                rationale.push(format!("threads set to {threads} physical cores"));
-                let config = build_config(backend, layers, ctx, threads, true, kv, true)?;
-                return Ok(Recommendation {
-                    config,
-                    rationale,
-                    estimate: MemoryEstimate {
-                        vram_bytes,
-                        ram_bytes,
-                        kv_bytes,
-                        vram_budget,
-                        ram_budget,
-                    },
-                });
+                ));
+            }
+            rationale.push("flash attention on: supported by the GPU backend".into());
+            rationale.push(format!("threads set to {threads} physical cores"));
+            let config = build_config(backend, layers, ctx, threads, true, kv, true)?;
+            return Ok(Recommendation {
+                config,
+                rationale,
+                estimate: MemoryEstimate {
+                    vram_bytes,
+                    ram_bytes,
+                    kv_bytes,
+                    vram_budget,
+                    ram_budget,
+                },
+            });
         }
     } else if allow_ram_kv {
         rationale.push(
@@ -1584,7 +1594,10 @@ mod tests {
             None,
         )
         .unwrap();
-        assert!(off.config.ctx_size < req, "VRAM-only plan must shrink the context");
+        assert!(
+            off.config.ctx_size < req,
+            "VRAM-only plan must shrink the context"
+        );
         assert!(!off.config.kv_offload);
         // Opt-in on: the KV cache moves to system RAM and the requested window is kept.
         let on = recommend_with_arch_and_floor(

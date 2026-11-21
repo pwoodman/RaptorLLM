@@ -990,9 +990,14 @@ impl AppState {
             extra_device_bytes,
             ..arch
         };
-        let mut rec = self
-            .runtime
-            .recommend_config_with_floor(&meta, &arch, ctx, floor, None, allow_ram_kv)?;
+        let mut rec = self.runtime.recommend_config_with_floor(
+            &meta,
+            &arch,
+            ctx,
+            floor,
+            None,
+            allow_ram_kv,
+        )?;
         let gpu = self
             .runtime
             .status()
